@@ -25,6 +25,11 @@ final class MainSplitViewController: NSViewController {
     private var isAddressBarTemporarilyShown = false
     private var toolbarView: NSView!
     private let contentContainerView = NSView()
+    /// Theme color laid over the behind-window glass backdrop.
+    private let chromeTintView = NSView()
+    /// Soft drop shadow under the floating web content card. Lives in a
+    /// separate view because the card itself clips to its rounded corners.
+    private let cardShadowView = NSView()
     private let sidebarToggleButton = NSButton()
     private let topHoverZone = HoverDetectorView()
     private var hideTimer: Timer?
@@ -67,19 +72,41 @@ final class MainSplitViewController: NSViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
-        view.wantsLayer = true
-        view.layer?.backgroundColor = Colors.chromeBg.cgColor
+        // Behind-window glass: the desktop blurs through the chrome, and the
+        // theme tint on top keeps each theme's color identity.
+        let backdrop = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
+        backdrop.material = .sidebar
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .followsWindowActiveState
+        view = backdrop
+
+        chromeTintView.wantsLayer = true
+        chromeTintView.layer?.backgroundColor = Colors.chromeTint.cgColor
+        chromeTintView.frame = backdrop.bounds
+        chromeTintView.autoresizingMask = [.width, .height]
+        backdrop.addSubview(chromeTintView)
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
         // -- Content container (toolbar + web view) with rounded corners --
+        // The web view clips itself to the card shape; the container stays
+        // unclipped so the card shadow and toolbar glass can breathe.
         contentContainerView.wantsLayer = true
-        contentContainerView.layer?.cornerRadius = 16
-        contentContainerView.layer?.masksToBounds = true
         view.addSubview(contentContainerView)
+
+        cardShadowView.wantsLayer = true
+        if let layer = cardShadowView.layer {
+            layer.cornerRadius = Layout.contentCornerRadius
+            layer.cornerCurve = .continuous
+            layer.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            layer.shadowColor = NSColor.black.cgColor
+            layer.shadowOpacity = 0.14
+            layer.shadowRadius = 10
+            layer.shadowOffset = CGSize(width: 0, height: -2)
+        }
+        contentContainerView.addSubview(cardShadowView)
 
         // -- Toolbar --
         addressBar.onToggleSidebar = { [weak self] in
@@ -143,7 +170,6 @@ final class MainSplitViewController: NSViewController {
         historyHostingVC = NSHostingController(rootView: panelView)
         historyHostingVC.sizingOptions = []
         historyHostingVC.view.wantsLayer = true
-        historyHostingVC.view.layer?.backgroundColor = Colors.chromeBg.cgColor
         addChild(historyHostingVC)
         view.addSubview(historyHostingVC.view)
         historyHostingVC.view.isHidden = true
@@ -181,7 +207,7 @@ final class MainSplitViewController: NSViewController {
         let toolbarHeight = Layout.toolbarHeight
         let dividerHitWidth: CGFloat = 16
         // Chrome padding — visible on right and bottom edges (left is sidebar, top is toolbar)
-        let chromeEdge: CGFloat = 8
+        let chromeEdge = Layout.chromeEdge
 
         // In full screen, the safe area top inset is 0 (no titlebar).
         // In windowed mode with fullSizeContentView, the titlebar occupies space at the top.
@@ -293,6 +319,13 @@ final class MainSplitViewController: NSViewController {
             x: 0, y: 0,
             width: fullContentWidth,
             height: webHeight
+        )
+        cardShadowView.frame = webViewController.view.frame
+        cardShadowView.layer?.shadowPath = CGPath(
+            roundedRect: cardShadowView.bounds,
+            cornerWidth: Layout.contentCornerRadius,
+            cornerHeight: Layout.contentCornerRadius,
+            transform: nil
         )
 
         // Border overlay always on top, covering full bounds
@@ -507,8 +540,8 @@ final class MainSplitViewController: NSViewController {
         // the "Blur" browser name. Blurs the web page content in real time.
         let dim = GaussianBlurView(radius: readerBlurRadius)
         dim.wantsLayer = true
-        dim.layer?.cornerRadius = 8
-        dim.layer?.maskedCorners = [.layerMaxXMaxYCorner, .layerMinXMaxYCorner]
+        dim.layer?.cornerRadius = Layout.contentCornerRadius
+        dim.layer?.cornerCurve = .continuous
         dim.layer?.masksToBounds = true
         dim.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(dim, positioned: .above, relativeTo: nil)
@@ -870,11 +903,9 @@ final class MainSplitViewController: NSViewController {
     /// Views that cache theme colors in stored properties at configuration
     /// time (e.g. the address bar) are refreshed explicitly by callers.
     func reapplyTheme() {
-        // Root split view background
-        view.layer?.backgroundColor = Colors.chromeBg.cgColor
-
-        // History panel background (created in viewDidLoad, hidden/shown via frames)
-        historyHostingVC.view.layer?.backgroundColor = Colors.chromeBg.cgColor
+        // Theme tint over the glass backdrop
+        chromeTintView.layer?.backgroundColor = Colors.chromeTint.cgColor
+        cardShadowView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         // Resize divider line colors — ResizeDividerView caches the borderLight
         // token in its sublayer at init, so update them explicitly.

@@ -28,8 +28,6 @@ final class WebViewController: NSViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    private let cornerMaskView = CornerMaskView()
-
     /// Native wallpaper overlay shown on top of the web view whenever the current
     /// tab is on `AppConstants.newTabURL`. Replaces the old blur://newtab HTML path.
     private let wallpaperView = NewTabWallpaperView()
@@ -37,6 +35,12 @@ final class WebViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
+        // The page is a floating rounded card. A real layer mask (rather than
+        // painting chrome-colored corners on top) is required now that the
+        // chrome behind it is translucent glass.
+        view.layer?.cornerRadius = Layout.contentCornerRadius
+        view.layer?.cornerCurve = .continuous
+        view.layer?.masksToBounds = true
     }
 
     override func viewDidLayout() {
@@ -97,10 +101,6 @@ final class WebViewController: NSViewController {
         // doesn't depend on WKWebView loading anything.
         updateNewTabWallpaper(for: tab)
 
-        // Corner mask on top of web view to fake rounded corners
-        cornerMaskView.removeFromSuperview()
-        view.addSubview(cornerMaskView)
-
         layoutCurrentWebView()
 
         if let fb = findBar {
@@ -130,18 +130,15 @@ final class WebViewController: NSViewController {
     private func layoutCurrentWebView() {
         guard let wv = currentWebView else { return }
         wv.frame = view.bounds
-        cornerMaskView.frame = view.bounds
         // Keep error page (if any) sized to fill the content area
         errorPageHosting?.view.frame = view.bounds
         wallpaperView.frame = view.bounds
-        // Re-assert z-order: [wkwebview] < [wallpaper] < [cornerMask] < [quickSearchOverlay]
+        // Re-assert z-order: [wkwebview] < [wallpaper] < [quickSearchOverlay]
         // addSubview without a positioning arg moves the subview to the top.
         if wallpaperView.superview === view {
             wallpaperView.removeFromSuperview()
             view.addSubview(wallpaperView)
         }
-        cornerMaskView.removeFromSuperview()
-        view.addSubview(cornerMaskView)
     }
 
     // MARK: - New Tab Wallpaper Overlay
@@ -476,7 +473,7 @@ final class WebViewController: NSViewController {
         hosting.view.autoresizingMask = [.width, .height]
         hosting.view.alphaValue = 0
 
-        view.addSubview(hosting.view, positioned: .below, relativeTo: cornerMaskView)
+        view.addSubview(hosting.view, positioned: .above, relativeTo: currentWebView)
         errorPageHosting = hosting
 
         // Animate in
@@ -589,52 +586,4 @@ final class WebViewController: NSViewController {
             height: h
         )
     }
-}
-
-// MARK: - Corner Mask View
-
-/// Draws the chrome background color into each corner on top of the WKWebView,
-/// faking rounded corners. WKWebView's internal compositing layers ignore
-/// parent masksToBounds, so this overlay paints over the sharp corners instead.
-private final class CornerMaskView: NSView {
-
-    private let maskLayer = CAShapeLayer()
-    private let radius: CGFloat = 16
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        // Fill the corners with chrome color, cut out the rounded rect center
-        maskLayer.fillRule = .evenOdd
-        maskLayer.fillColor = Colors.chromeBg.cgColor
-        layer?.addSublayer(maskLayer)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    // Use the layer-update path so updateLayer() is called on setNeedsDisplay.
-    // This lets reapplyTheme() re-read the chrome color after a theme switch
-    // (the CAShapeLayer's fillColor otherwise stays cached at the old value).
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        super.updateLayer()
-        maskLayer.fillColor = Colors.chromeBg.cgColor
-    }
-
-    override func layout() {
-        super.layout()
-        let rect = bounds
-        maskLayer.frame = rect
-
-        // Outer path = full rect, inner path = rounded rect (punched out)
-        let outer = CGMutablePath()
-        outer.addRect(rect)
-        outer.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
-        maskLayer.path = outer
-    }
-
-    // Pass all events through — this is purely visual
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
