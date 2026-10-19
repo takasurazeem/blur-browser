@@ -238,6 +238,29 @@ Extension from App…** › `/Applications/1Password for Safari.app`, or
 **Import from Chrome, Arc or Brave…** for the Chrome copy. Load only one at a
 time: both inject into every page.
 
+### 1Password for Safari relocked right after unlock (fixed)
+
+Symptom: unlocking in the popup closed it, and it was locked again next time.
+The popup closed itself (`window.close()` from the page, not our popover),
+because 1Password's **Safari lock monitor** asks its native app
+`sendNativeMessage("", {name: "query-active-status"})`. That handler lives in
+"1Password for Safari.app", which only Safari can reach, so the call failed,
+the monitor logged "[LM] Unable to communicate with native app, locking.",
+and the extension locked again and closed the popup.
+
+`Browse/Extensions/SafariNativeShim.swift` answers the stateless messages for
+`com.1password.safari.extension`:
+
+- `query-active-status`: `"active"` unless the screen is locked or there's
+  been no input for the requested time; else `"locked"`.
+- `copy-to-clipboard`: concealed copies are marked
+  `org.nspasteboard.ConcealedType`.
+- `request-os-version`.
+- `connectNative("")`: a quiet port, so the lock monitor starts.
+
+Anything needing 1Password's app (`core`: biometry and device calls, `iap`,
+`save-download`) still errors, and 1Password uses its account-password flow.
+
 ### With a free Apple developer account: 1Password without the desktop app
 
 No Developer ID means no desktop-app connection, but the extension can sign

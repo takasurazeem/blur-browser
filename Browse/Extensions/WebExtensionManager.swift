@@ -95,8 +95,27 @@ final class WebExtensionManager: NSObject {
             try? await Task.sleep(for: .seconds(10))
             logState()
         }
+        // Shell-triggerable hooks for debugging without clicking: post
+        // "BlurDebugLogState" (log tabs/errors/popup) or "BlurDebugPerformAction"
+        // (click the first extension's toolbar button) on the distributed
+        // notification center.
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(forName: Notification.Name("BlurDebugLogState"), object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { WebExtensionManager.shared.logState() }
+        }
+        center.addObserver(forName: Notification.Name("BlurDebugPerformAction"), object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                let manager = WebExtensionManager.shared
+                guard let item = manager.installed.first, let wc = manager.focusedWindowController else { return }
+                manager.performAction(for: item.context, in: wc)
+            }
+        }
         #endif
     }
+
+    #if DEBUG
+    @ObservationIgnored private var lastPopupWebView: WKWebView?
+    #endif
 
     @ObservationIgnored private var loggedErrorCounts: [String: Int] = [:]
 
@@ -115,6 +134,18 @@ final class WebExtensionManager: NSObject {
                 logger.notice("  error: \(error.localizedDescription, privacy: .public)")
             }
             loggedErrorCounts[item.id] = errors.count
+            #if DEBUG
+            let knownWebViews = Set(open.compactMap { $0.tab?.webView }.map(ObjectIdentifier.init))
+            for tab in appTabs where !knownWebViews.contains(ObjectIdentifier(tab.webView)) {
+                logger.notice("  tab unknown to WebKit: \(tab.url?.absoluteString ?? "nil", privacy: .public)")
+            }
+            if let popup = lastPopupWebView {
+                logger.notice("  popup: url=\(popup.url?.absoluteString ?? "nil", privacy: .public) frame=\(String(describing: popup.frame), privacy: .public) window=\(popup.window != nil)")
+                popup.evaluateJavaScript("document.body ? document.body.innerText.slice(0, 400) : ''") { result, error in
+                    logger.notice("  popup text: \(String(describing: result), privacy: .public) \(String(describing: error), privacy: .public)")
+                }
+            }
+            #endif
         }
     }
 
@@ -542,6 +573,10 @@ extension WebExtensionManager: WKWebExtensionControllerDelegate {
     }
 
     func webExtensionController(_ controller: WKWebExtensionController, presentActionPopup action: WKWebExtension.Action, for context: WKWebExtensionContext, completionHandler: @escaping (Error?) -> Void) {
+        #if DEBUG
+        lastPopupWebView = action.popupWebView
+        logger.notice("presentActionPopup: popover=\(action.popupPopover != nil) webView=\(action.popupWebView != nil) shown=\(action.popupPopover?.isShown ?? false) anchor=\(self.popupAnchor?(context) != nil) keyWindow=\(NSApp.keyWindow != nil) active=\(NSApp.isActive)")
+        #endif
         guard let popover = action.popupPopover,
               let anchor = popupAnchor?(context) ?? focusedWindowController?.window?.contentView else {
             return completionHandler(nil)
@@ -552,10 +587,27 @@ extension WebExtensionManager: WKWebExtensionControllerDelegate {
     }
 
     func webExtensionController(_ controller: WKWebExtensionController, sendMessage message: Any, toApplicationWithIdentifier applicationIdentifier: String?, for extensionContext: WKWebExtensionContext, replyHandler: @escaping (Any?, Error?) -> Void) {
+        if (applicationIdentifier ?? "").isEmpty, usesSafariNativeShim(extensionContext) {
+            do { replyHandler(try SafariNativeShim.reply(to: message), nil) } catch { replyHandler(nil, error) }
+            return
+        }
         nativeMessaging.sendMessage(message, toHost: applicationIdentifier, from: extensionContext, replyHandler: replyHandler)
     }
 
     func webExtensionController(_ controller: WKWebExtensionController, connectUsing port: WKWebExtension.MessagePort, for extensionContext: WKWebExtensionContext, completionHandler: @escaping (Error?) -> Void) {
+        if (port.applicationIdentifier ?? "").isEmpty, usesSafariNativeShim(extensionContext) {
+            SafariNativeShim.acceptQuietPort(port)
+            return completionHandler(nil)
+        }
         nativeMessaging.connect(port, from: extensionContext, completionHandler: completionHandler)
+    }
+
+    /// Safari web extensions whose app-extension handler we stand in for
+    /// (see SafariNativeShim).
+    private func usesSafariNativeShim(_ context: WKWebExtensionContext) -> Bool {
+        guard let source = installed.first(where: { $0.context === context })?.source,
+              source.kind == .appExtension,
+              let bundleID = Bundle(path: source.path)?.bundleIdentifier else { return false }
+        return SafariNativeShim.supportedBundleIDs.contains(bundleID)
     }
 }
