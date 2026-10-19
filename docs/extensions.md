@@ -133,8 +133,9 @@ Status (2026-10-19, 1Password 8.12.40 desktop, extension 8.12.41.1):
 | Background worker starts under WebKit | Done, with the compat shim |
 | Native host found and launched (`com.1password.1password` → `1Password-BrowserSupport`, origin passed as `argv[1]`) | Done |
 | Extension ↔ host messaging | Works. First request `NmRequestAccounts`; reply `NotificationModern / BrowserVerificationFailed (UnknownBrowser)` |
-| 1Password trusts Blur-Browser | **Needs you:** add the browser in 1Password (below) |
-| Popup locked/unlocked, password fill, passkey on webauthn.io | Not verified yet; needs the step above |
+| Browser added in 1Password › Settings › Browser | Done by you; reply changed from `UnknownBrowser` to `BrowserSignatureInvalid` |
+| 1Password accepts the signature | **No: needs a Developer ID signature** (below) |
+| Popup locked/unlocked, password fill, passkey on webauthn.io | Not verified yet; blocked on the signature |
 
 **Why the Safari version can't be used:** "1Password for Safari" reaches the
 desktop app through an app extension that only Safari may host. The Chrome
@@ -142,45 +143,64 @@ extension uses a standard native-messaging host instead, which this browser
 can launch.
 
 **How 1Password decides whether to trust a browser:** `1Password-BrowserSupport`
-checks the code signature of the process that launched it (our app). The
-desktop app keeps a built-in list of trusted browsers (bundle id + team id)
-and also accepts browsers the user adds under **Settings › Browser**. Its
-errors include `BrowserVerificationFailed`, `UnknownBrowser`, "The selected
-application was not signed…" and "…signed in an unsupported way or may be
-missing a required identifier". Ad-hoc-signed builds are always refused.
-Blur-Browser in /Applications is signed "Apple Development: Takasur Azeem",
-team `95B9YTC3G2`, bundle id `com.takasurazeem.blur-browser`. Whether
-1Password accepts an Apple Development signature (vs Developer ID) is what
-the next step shows.
+checks the code signature of the process that launched it (our app). Browsers
+you add under **Settings › Browser** must satisfy this requirement, found in
+the helper binary:
+
+```
+anchor apple generic and (
+  certificate leaf[field.1.2.840.113635.100.6.1.9]      // Mac App Store
+  or certificate leaf[field.1.2.840.113635.100.6.1.3]
+  or certificate leaf[field.1.2.840.113635.100.6.1.6]
+  or certificate leaf[field.1.2.840.113635.100.6.1.25.1]
+  or certificate 1[field.1.2.840.113635.100.6.2.6]
+     and certificate leaf[field.1.2.840.113635.100.6.1.13]  // Developer ID Application
+) and certificate leaf[subject.OU] = "<team id>"
+```
+
+**Apple Development certificates aren't on the list**, so a Debug build is
+answered `BrowserSignatureInvalid`. `codesign -v -R='<that requirement>'`
+fails for our Apple Development build and passes for Arc and Brave. Dropping
+`get-task-allow` doesn't help; the certificate type is what matters.
+Notarization isn't part of the check.
 
 ### Your steps
 
-1. Use **/Applications/Blur-Browser.app**, the one that's installed there. To
-   update it after a rebuild:
+1. **Create a Developer ID Application certificate** (Account Holder of team
+   `95B9YTC3G2`): Xcode › Settings › Accounts › add that Apple ID if missing ›
+   select the team › **Manage Certificates…** › **+** › **Developer ID
+   Application**. Or developer.apple.com › Certificates › + › Developer ID
+   Application, with a CSR from Keychain Access. Check it with:
 
    ```bash
-   ditto build/DerivedData/Build/Products/Debug/Blur-Browser.app /Applications/Blur-Browser.app
+   security find-identity -v -p codesigning | grep "Developer ID Application"
    ```
 
-2. 1Password › **Settings › Browser** → add **/Applications/Blur-Browser.app**.
-   It may be called "Add Browser" or "Connect additional browsers".
-3. In Blur-Browser, click the 1Password toolbar button. If 1Password asks
-   you to approve the browser connection, approve it, then unlock.
-4. If step 2 says the app "was signed in an unsupported way", 1Password wants
-   a Developer ID signature. Create a Developer ID Application certificate
-   (developer.apple.com › Certificates › + › Developer ID Application, Account
-   Holder only), then set `BLUR_SIGN_IDENTITY_Debug = Developer ID Application`
-   in `Config/Signing.local.xcconfig`, rebuild, copy to /Applications, and add
-   it again.
+2. **Build and install with it:**
 
-To watch what 1Password answers (message types only, never content):
+   ```bash
+   scripts/install-app.sh
+   ```
+
+   It builds Release, signs with your Developer ID certificate, replaces
+   /Applications/Blur-Browser.app and launches it. Use this copy day to day.
+   Debug builds from Xcode stay Apple Development and won't connect to
+   1Password.
+3. **Re-add the browser** in 1Password › Settings › Browser: remove the old
+   Blur-Browser entry, add /Applications/Blur-Browser.app again, approve, unlock.
+4. Click the 1Password toolbar button in Blur-Browser.
+
+To watch what 1Password answers (message types and status codes only, never
+content):
 
 ```bash
 /usr/bin/log stream --level debug --predicate 'subsystem == "com.takasurazeem.blur-browser" AND category == "NativeMessaging"'
 ```
 
-`BrowserVerificationFailed` means 1Password doesn't trust the browser yet.
-Account and item traffic means it's connected.
+- `BrowserVerificationFailed/UnknownBrowser`: not added in 1Password.
+- `BrowserVerificationFailed/BrowserSignatureInvalid`: added, but not signed
+  with Developer ID.
+- Account and item traffic: connected.
 
 ### Passkeys through 1Password
 

@@ -103,6 +103,8 @@ final class NativeMessagingBridge {
         func walk(_ value: Any, depth: Int) {
             guard depth < 4, let dict = value as? [String: Any] else { return }
             if let type = dict["type"] as? String { types.append(type) }
+            // Status codes such as "UnknownBrowser" sit beside "type" as a bare string.
+            if dict["type"] != nil, let code = dict["content"] as? String, code.count < 64 { types.append(code) }
             for key in ["invocation", "content", "data", "response"] {
                 if let child = dict[key] { walk(child, depth: depth + 1) }
             }
