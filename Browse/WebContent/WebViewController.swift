@@ -17,6 +17,8 @@ final class WebViewController: NSViewController {
     private var historyStore: HistoryStore?
     private var quickSearchOverlay: QuickSearchOverlay?
     private var errorPageHosting: NSHostingController<ErrorPageView>?
+    /// Virtual cursor + input blocker for agent actions (see AgentActionOverlay).
+    fileprivate var agentOverlay: AgentActionOverlay?
 
     var onNewTabRequested: ((URL) -> Void)?
 
@@ -812,5 +814,22 @@ final class WebViewController: NSViewController {
             width: barWidth,
             height: h
         )
+    }
+}
+
+// MARK: - Agent actions
+
+extension WebViewController: AgentActionHosting {
+    /// The agent's cursor/blocking overlay, created on first use and raised
+    /// above everything in the content area each time an action starts.
+    func agentActionOverlay() -> AgentActionOverlay {
+        let overlay = agentOverlay ?? AgentActionOverlay(frame: view.bounds)
+        agentOverlay = overlay
+        overlay.frame = view.bounds
+        if view.subviews.last !== overlay {
+            overlay.removeFromSuperview()
+            view.addSubview(overlay, positioned: .above, relativeTo: nil)
+        }
+        return overlay
     }
 }

@@ -45,6 +45,11 @@ final class SettingsWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    func showSettings(tab: SettingsTab) {
+        SettingsRouter.shared.selectedTab = tab
+        showSettings()
+    }
+
     func showSettings() {
         centerOverActiveBrowserWindow()
         window?.makeKeyAndOrderFront(nil)

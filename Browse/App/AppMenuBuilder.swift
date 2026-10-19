@@ -69,6 +69,8 @@ enum AppMenuBuilder {
         addItem(to: viewMenu, title: "Web Inspector", action: #selector(AppDelegate.toggleInspector(_:)), key: "c", modifiers: [.command, .option], target: delegate)
         addItem(to: viewMenu, title: "Easy Read", action: #selector(AppDelegate.toggleEasyRead(_:)), key: "E", modifiers: [.command, .shift], target: delegate)
         addItem(to: viewMenu, title: "Show Downloads", action: #selector(AppDelegate.showDownloads(_:)), key: "l", modifiers: [.command, .option], target: delegate)
+        viewMenu.addItem(.separator())
+        addItem(to: viewMenu, title: "Toggle Agent", action: #selector(AppDelegate.toggleAgent(_:)), key: "a", modifiers: [.command, .option], target: delegate)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)

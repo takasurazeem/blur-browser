@@ -19,6 +19,9 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
     private let readerButton = NSButton()
     private let shareButton = NSButton()
     private let moreButton = NSButton()
+    private let agentButton = NSButton()
+    /// Red capsule shown while the agent is in Dangerous mode for this window.
+    private let dangerBadge = NSGlassEffectView()
     private let progressBar = NSView()
     /// Web extension toolbar buttons get their own glass capsule, left of
     /// [reload · share · focus]; hidden when no extension has an action.
@@ -40,6 +43,9 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
 
     /// Called when the reader-mode button is tapped
     var onToggleReaderMode: (() -> Void)?
+
+    /// Called when the agent button or the Dangerous-mode badge is tapped
+    var onToggleAgent: (() -> Void)?
 
     init(tabManager: TabManager) {
         self.tabManager = tabManager
@@ -71,8 +77,10 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
         configureNavButton(reloadButton, symbol: "arrow.clockwise", tip: "Reload", action: #selector(reloadPage))
         configureNavButton(shareButton, symbol: "square.and.arrow.up", tip: "Share", action: #selector(sharePage))
         configureNavButton(moreButton, symbol: "arrow.up.left.and.arrow.down.right", tip: "Focus Mode", action: #selector(showMore))
+        configureNavButton(agentButton, symbol: "sparkles", tip: "Agent (⌥⌘A)", action: #selector(toggleAgentTapped))
+        configureDangerBadge()
 
-        // Clicking anywhere in the URL capsule focuses the field
+        // Clicking the URL pill opens Quick Search (the field itself is read-only)
         let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleUrlContainerMousClick))
         urlContainer.addGestureRecognizer(clickGesture)
 
@@ -109,7 +117,7 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
 
         // Liquid Glass capsules: [sidebar · back · forward]  [ url ]  [reload · share · focus]
         let leftGroup = makeGlassGroup([sidebarToggleButton, backButton, forwardButton])
-        let rightGroup = makeGlassGroup([reloadButton, shareButton, moreButton])
+        let rightGroup = makeGlassGroup([reloadButton, shareButton, agentButton, moreButton])
 
         extensionsStack.orientation = .horizontal
         extensionsStack.spacing = 0
@@ -118,10 +126,11 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
         extensionsGlass.cornerRadius = Layout.toolbarControlHeight / 2
         extensionsGlass.isHidden = true
 
-        // Hidden capsules are detached, so the URL bar grows into their space.
-        let trailingGroups = NSStackView(views: [extensionsGlass, rightGroup])
+        // Extensions capsule, danger badge and page actions. Hidden views are
+        // detached, so the URL bar grows into their space.
+        let trailingGroups = NSStackView(views: [extensionsGlass, dangerBadge, rightGroup])
         trailingGroups.orientation = .horizontal
-        trailingGroups.spacing = 10
+        trailingGroups.spacing = 8
         trailingGroups.detachesHiddenViews = true
 
         for v in [leftGroup, urlGlass, trailingGroups] as [NSView] {
@@ -157,6 +166,7 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
             trailingGroups.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             rightGroup.heightAnchor.constraint(equalToConstant: controlHeight),
             extensionsGlass.heightAnchor.constraint(equalToConstant: controlHeight),
+            dangerBadge.heightAnchor.constraint(equalToConstant: controlHeight),
 
             highPri(lockIcon.leadingAnchor.constraint(equalTo: urlContainer.leadingAnchor, constant: 14)),
             lockIcon.centerYAnchor.constraint(equalTo: urlContainer.centerYAnchor),
@@ -220,6 +230,40 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
         button.setContentHuggingPriority(.required, for: .horizontal)
     }
 
+    private func configureDangerBadge() {
+        let button = NSButton(title: "Dangerous", image: NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)!, target: self, action: #selector(toggleAgentTapped))
+        button.isBordered = false
+        button.imagePosition = .imageLeading
+        button.symbolConfiguration = .init(pointSize: 11, weight: .bold)
+        button.font = .systemFont(ofSize: Typography.smallSize, weight: .semibold)
+        button.contentTintColor = Colors.foregroundInverse
+        button.attributedTitle = NSAttributedString(string: "Dangerous", attributes: [
+            .foregroundColor: Colors.foregroundInverse,
+            .font: NSFont.systemFont(ofSize: Typography.smallSize, weight: .semibold),
+        ])
+        button.toolTip = "Agent is in Dangerous mode for this window — it acts without asking. Click to open the Agent panel."
+        button.setAccessibilityLabel("Agent Dangerous mode is on")
+
+        let content = NSView()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            button.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            button.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+        ])
+        dangerBadge.contentView = content
+        dangerBadge.cornerRadius = Layout.toolbarControlHeight / 2
+        dangerBadge.tintColor = Colors.danger
+        dangerBadge.isHidden = true
+    }
+
+    /// Show the toolbar's Dangerous-mode indicator for this window's agent session.
+    func setAgentDangerous(_ dangerous: Bool) {
+        dangerBadge.isHidden = !dangerous
+        agentButton.contentTintColor = dangerous ? Colors.danger : Colors.foregroundSecondary
+    }
+
     private func configureReaderButton() {
         readerButton.image = NSImage(
             systemSymbolName: "doc.plaintext",
@@ -263,6 +307,7 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
             button.contentTintColor = Colors.foregroundSecondary
         }
         reloadExtensionButtons()
+        setAgentDangerous(!dangerBadge.isHidden)
 
         urlField.textColor = Colors.foregroundPrimary
         lockIcon.contentTintColor = Colors.foregroundSecondary
@@ -436,6 +481,10 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
 
     @objc private func toggleSidebarTapped() {
         onToggleSidebar?()
+    }
+
+    @objc private func toggleAgentTapped() {
+        onToggleAgent?()
     }
 
     @objc private func sharePage() {

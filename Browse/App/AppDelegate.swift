@@ -171,6 +171,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wc.toggleHistory()
     }
 
+    @objc func toggleAgent(_ sender: Any?) {
+        guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
+        wc.toggleAgentPanel()
+    }
+
     @objc func focusMode(_ sender: Any?) {
         guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
         wc.focusMode()

@@ -21,6 +21,8 @@ enum Colors {
     // MARK: - Static (non-themed) tokens
     static let foregroundInverse = NSColor(hex: "#FFFFFF")
     static let surfaceInverse    = NSColor(hex: "#0A0A0A")
+    /// Destructive / high-risk state (e.g. agent Dangerous mode).
+    static let danger            = NSColor(hex: "#EF4444")
 
     // MARK: - Surfaces (appearance-aware)
     // Cards, popovers and settings panes. These resolve against the effective
