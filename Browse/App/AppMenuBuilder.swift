@@ -87,6 +87,7 @@ enum AppMenuBuilder {
 
         // Extensions menu
         let extensionsMenu = NSMenu(title: "Extensions")
+        addItem(to: extensionsMenu, title: "Import from Chrome, Arc or Brave...", action: #selector(AppDelegate.importChromiumExtension(_:)), key: "", target: delegate)
         addItem(to: extensionsMenu, title: "Load Unpacked Extension...", action: #selector(AppDelegate.loadUnpackedExtension(_:)), key: "", target: delegate)
         addItem(to: extensionsMenu, title: "Load Safari Extension from App...", action: #selector(AppDelegate.loadSafariExtension(_:)), key: "", target: delegate)
         extensionsMenu.addItem(.separator())

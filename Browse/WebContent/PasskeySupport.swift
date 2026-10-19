@@ -39,10 +39,13 @@ enum PasskeySupport {
             if isAvailable {
                 logger.notice("Passkeys enabled: signed with \(entitlement, privacy: .public)")
             } else {
-                logger.notice("Passkeys disabled: missing \(entitlement, privacy: .public); hiding WebAuthn so sites fall back to other sign-in methods")
+                logger.notice("Passkeys: missing \(entitlement, privacy: .public); WebAuthn \(WebExtensionManager.hasSavedExtensions ? "left on for extensions" : "hidden so sites fall back", privacy: .public)")
             }
         }
-        guard !isAvailable else { return }
+        // Password-manager extensions (1Password) supply passkeys by wrapping
+        // navigator.credentials, so leave WebAuthn visible when any extension
+        // is installed; their fallback just fails like before.
+        guard !isAvailable, !WebExtensionManager.hasSavedExtensions else { return }
         setFeature("WebAuthenticationEnabled", enabled: false, in: preferences)
     }
 

@@ -11,7 +11,12 @@ backgrounds, content scripts, `tabs`, `windows`, `storage`, `action`,
 
 **Extensions** menu:
 
+- **Import from Chrome, Arc or Brave…**: lists extensions already installed
+  in Chromium browser profiles on this Mac (any `…/Extensions/<id>/<version>`
+  under `~/Library/Application Support`) and loads a copy. This is the easy
+  way to get 1Password.
 - **Load Unpacked Extension…**: pick a folder that contains `manifest.json`.
+  Like Chrome extensions installed from Chrome, it's copied (see below).
 - **Load Safari Extension from App…**: pick an app (or an `.appex`). Each
   Safari web extension in its `Contents/PlugIns` is loaded, using only the
   extension's resources. See the limits below.
@@ -44,6 +49,7 @@ In Debug, extension pages are inspectable: Safari › Develop › Blur-Browser.
 | Controller, install/restore, delegate | `Browse/Extensions/WebExtensionManager.swift` |
 | `WKWebExtensionTab` / `WKWebExtensionWindow` adapters over `BrowserTab` / `BrowserWindowController` | `Browse/Extensions/WebExtensionAdapters.swift` |
 | Native messaging (Chrome-style stdio hosts) | `Browse/Extensions/NativeMessagingBridge.swift` |
+| Chrome import, managed copies, compat shim | `Browse/Extensions/ChromeExtensionImporter.swift`, `Browse/Extensions/blur-chrome-compat.js` |
 | Toolbar buttons + popover anchor | `Browse/Toolbar/AddressBarViewController.swift` |
 | Controller attached to every tab's configuration | `BrowserTab.makeFilterConfiguration()` |
 
@@ -74,6 +80,36 @@ The ID is computed from the manifest's `key` exactly as Chrome does it. The
 host is started with that origin as `argv[1]` and speaks length-prefixed JSON
 over stdio.
 
+## Chrome compatibility shim
+
+Unpacked extensions are copied to
+`~/Library/Application Support/Blur-Browser/Extensions/<install id>/` (Chrome's
+`_metadata/` dropped, `manifest.json` `key` kept, so the Chrome ID is
+unchanged). `blur-chrome-compat.js` is then put in front of the background
+script:
+
+- **MV3:** a sibling `blur-<worker>.js` holds the shim followed by the original
+  worker, and the manifest points at it.
+- **MV2:** the shim is prepended to `background.scripts`.
+
+The shim adds stand-ins for Chrome APIs WebKit lacks: `notifications`,
+`downloads`, `idle`, `management`, `privacy`, `storage.managed`, and missing
+events such as `webNavigation.onCreatedNavigationTarget`, `tabs.onReplaced`
+and `runtime.onSuspend`. Without it 1Password's worker dies on its first line
+(`chrome.notifications.onClicked`).
+
+Two WebKit quirks found on the way:
+
+- **Additions to API objects can vanish.** WebKit's namespace objects
+  (`chrome.webNavigation`, …) are wrappers that can be garbage-collected and
+  recreated, and anything added to them is lost. The shim keeps references
+  (`globalThis.__blurChromeCompatKeepAlive`) to every object it extends.
+- **Error positions in big minified workers are unreliable.** The line/column
+  of a background error can point at the top-level call into an async
+  initializer, and the quoted expression can be the wrong one. Log with
+  `console.error` (it shows up in `WKWebExtensionContext.errors`) to find the
+  real failure.
+
 ## Limits
 
 - **Safari extensions loaded from another app don't get native messaging.**
@@ -89,74 +125,76 @@ over stdio.
 
 ## 1Password
 
-**Short answer:** not out of the box. There's a realistic path, but only you
-can finish it, because it needs 1Password's extension files and your 1Password
-app's approval. Here is what 1Password checks and what is in place for each.
+Status (2026-10-19, 1Password 8.12.40 desktop, extension 8.12.41.1):
 
-1Password's browser integration has two parts, and both have to accept the
-browser:
+| Step | State |
+|---|---|
+| Chrome extension imported, Chrome ID `aeblfdkhhhdcdjpifhhbdiojplfjncoa` kept | Done (Extensions › Import…, from Arc/BrowserClaw's profile) |
+| Background worker starts under WebKit | Done, with the compat shim |
+| Native host found and launched (`com.1password.1password` → `1Password-BrowserSupport`, origin passed as `argv[1]`) | Done |
+| Extension ↔ host messaging | Works. First request `NmRequestAccounts`; reply `NotificationModern / BrowserVerificationFailed (UnknownBrowser)` |
+| 1Password trusts Blur-Browser | **Needs you:** add the browser in 1Password (below) |
+| Popup locked/unlocked, password fill, passkey on webauthn.io | Not verified yet; needs the step above |
 
-1. **The extension.** For Safari, 1Password ships "1Password for Safari", a
-   separate App Store app whose Safari web extension talks to 1Password through
-   its app extension. As described under Limits, Blur-Browser can load that
-   extension's files but can't reach its native side. **Use the Chrome
-   extension instead** (Web Store ID `aeblfdkhhhdcdjpifhhbdiojplfjncoa`). It
-   talks to 1Password through a standard native messaging host.
-2. **The native messaging host.** 1Password 8 registers
-   `com.1password.1password` for Chrome and other browsers. The manifest is
-   already in `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`
-   on this Mac. Its executable is
-   `/Applications/1Password.app/Contents/Library/LoginItems/1Password Browser Helper.app/Contents/MacOS/1Password-BrowserSupport`,
-   and its `allowed_origins` include `chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/`.
-   Blur-Browser's bridge finds this host automatically.
-3. **The browser check.** This is the real gate. 1Password inspects the
-   process that launched the host (the browser) and verifies its code
-   signature. The 1Password 8.12 binaries contain a built-in allowlist of
-   browsers by bundle id and team id, plus "custom browsers" a user adds
-   under **1Password › Settings › Browser**. They also contain the errors this
-   check produces: `BrowserVerificationFailed`, `UnknownBrowser`, "The selected
-   application was not signed…", and "…signed in an unsupported way or may be
-   missing a required identifier". Per 1Password staff on their community
-   forum, ad-hoc-signed apps are rejected and the check can't be bypassed. The
-   `custom_allowed_browsers` file only works on Linux.
+**Why the Safari version can't be used:** "1Password for Safari" reaches the
+desktop app through an app extension that only Safari may host. The Chrome
+extension uses a standard native-messaging host instead, which this browser
+can launch.
 
-### Steps to try
+**How 1Password decides whether to trust a browser:** `1Password-BrowserSupport`
+checks the code signature of the process that launched it (our app). The
+desktop app keeps a built-in list of trusted browsers (bundle id + team id)
+and also accepts browsers the user adds under **Settings › Browser**. Its
+errors include `BrowserVerificationFailed`, `UnknownBrowser`, "The selected
+application was not signed…" and "…signed in an unsupported way or may be
+missing a required identifier". Ad-hoc-signed builds are always refused.
+Blur-Browser in /Applications is signed "Apple Development: Takasur Azeem",
+team `95B9YTC3G2`, bundle id `com.takasurazeem.blur-browser`. Whether
+1Password accepts an Apple Development signature (vs Developer ID) is what
+the next step shows.
 
-1. Sign the browser with your team. Set up `Config/Signing.local.xcconfig` as
-   described in [passkeys.md](passkeys.md). The browser must carry a team ID
-   and bundle identifier. An ad-hoc Debug build will be refused.
-2. Build, copy `Blur-Browser.app` to **/Applications** (1Password staff list
-   this as a requirement for custom browsers), and launch it from there.
-3. In **1Password › Settings › Browser**, add `/Applications/Blur-Browser.app`
-   as a browser. If 1Password says the app "was signed in an unsupported way",
-   it is rejecting the Apple Development signature. Sign with a Developer ID
-   certificate instead, and notarize the build if needed.
-4. Get an unpacked copy of the 1Password Chrome extension that keeps its
-   Chrome ID:
-   - Install it in Chrome, then copy
-     `~/Library/Application Support/Google/Chrome/Default/Extensions/aeblfdkhhhdcdjpifhhbdiojplfjncoa/<version>/`
-     somewhere stable. Chrome writes the extension's `key` into that
-     `manifest.json`, so Blur-Browser computes the same ID and the host's
-     `allowed_origins` check passes.
-   - Remove `_metadata/` from the copy (Chrome's signature data).
-5. **Extensions › Load Unpacked Extension…** → that folder.
-6. Open the 1Password popup from the toolbar. If it reaches the host, the
-   desktop app asks you to approve the new browser.
+### Your steps
 
-### Unverified, may block it
+1. Use **/Applications/Blur-Browser.app**, the one that's installed there. To
+   update it after a rebuild:
 
-- Whether 1Password's custom-browser check accepts an **Apple Development**
-  signature or requires **Developer ID**.
-- Whether 1Password's MV3 Chrome extension runs under WebKit's extension API.
-  It may use Chrome-only APIs such as `offscreen`; check the extension's
-  errors in Safari › Develop. If it does, it won't work in any WebKit browser,
-  this one included.
-- None of the 1Password flow was exercised here. It needs your 1Password app
-  and approval prompts. What was tested: the sample extension end-to-end
-  (popup, `tabs`, `storage`, content-script messaging, badge) through WebKit's
-  API, and the bridge's stdio framing against a test host.
+   ```bash
+   ditto build/DerivedData/Build/Products/Debug/Blur-Browser.app /Applications/Blur-Browser.app
+   ```
 
-If this path fails, try 1Password's macOS-level autofill (1Password ›
-Settings › Autofill, the system AutoFill provider). It doesn't need the
-extension, but it hasn't been checked whether it offers suggestions inside a
-third-party `WKWebView`.
+2. 1Password › **Settings › Browser** → add **/Applications/Blur-Browser.app**.
+   It may be called "Add Browser" or "Connect additional browsers".
+3. In Blur-Browser, click the 1Password toolbar button. If 1Password asks
+   you to approve the browser connection, approve it, then unlock.
+4. If step 2 says the app "was signed in an unsupported way", 1Password wants
+   a Developer ID signature. Create a Developer ID Application certificate
+   (developer.apple.com › Certificates › + › Developer ID Application, Account
+   Holder only), then set `BLUR_SIGN_IDENTITY_Debug = Developer ID Application`
+   in `Config/Signing.local.xcconfig`, rebuild, copy to /Applications, and add
+   it again.
+
+To watch what 1Password answers (message types only, never content):
+
+```bash
+/usr/bin/log stream --level debug --predicate 'subsystem == "com.takasurazeem.blur-browser" AND category == "NativeMessaging"'
+```
+
+`BrowserVerificationFailed` means 1Password doesn't trust the browser yet.
+Account and item traffic means it's connected.
+
+### Passkeys through 1Password
+
+1Password saves and fills passkeys itself. Its page script
+(`inline/injected/webauthn-listeners.js`, `world: MAIN`) wraps
+`navigator.credentials.create/get`. That route doesn't need Apple's passkey
+entitlement, but it only installs if `navigator.credentials` exists. So
+`PasskeySupport` leaves WebAuthn visible whenever any extension is installed,
+and only hides it when there are none. When 1Password declines a request,
+it falls back to the browser's own WebAuthn, which still fails without the
+entitlement (see [passkeys.md](passkeys.md)).
+
+### Known overlap
+
+Blur-Browser's built-in password manager (`passwordManager.js`) still runs
+alongside 1Password, so both may offer to save or fill. Turn one off if
+that's noisy.

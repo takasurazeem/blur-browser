@@ -24,6 +24,9 @@ final class WebExtensionManager: NSObject {
         /// Stable per-install ID. Doubles as the context's `uniqueIdentifier`,
         /// which keys the extension's storage and its webkit-extension:// host.
         var id: String
+        /// For unpacked extensions: the folder the user picked. `path` is then
+        /// our managed copy with the Chrome compat shim (ChromeExtensionImporter).
+        var origin: String?
     }
 
     struct Installed: Identifiable {
@@ -31,7 +34,7 @@ final class WebExtensionManager: NSObject {
         let context: WKWebExtensionContext
         var isRemembered = true
         var id: String { source.id }
-        var displayName: String { context.webExtension.displayName ?? URL(fileURLWithPath: source.path).lastPathComponent }
+        @MainActor var displayName: String { context.webExtension.displayName ?? URL(fileURLWithPath: source.path).lastPathComponent }
     }
 
     let controller: WKWebExtensionController
@@ -83,10 +86,26 @@ final class WebExtensionManager: NSObject {
         }
     }
 
-    /// Load an unpacked extension (a folder containing manifest.json).
+    /// Whether any extension is saved for loading at launch. Readable before
+    /// `restore()` finishes, so the first tabs' configuration can depend on it.
+    static var hasSavedExtensions: Bool { !savedSources().isEmpty }
+
+    /// Load an unpacked extension (a folder containing manifest.json). It's
+    /// copied into a managed folder with the Chrome compat shim applied.
     func installUnpacked(at folder: URL, remember: Bool = true) async throws {
-        let source = Source(kind: .folder, path: folder.standardizedFileURL.path, id: UUID().uuidString)
-        try await load(source, isNewInstall: true, remember: remember)
+        let origin = folder.standardizedFileURL.path
+        if installed.contains(where: { $0.source.origin == origin || $0.source.path == origin }) {
+            throw ExtensionError.alreadyInstalled
+        }
+        let id = UUID().uuidString
+        let copy = try ChromeExtensionImporter.prepareManagedCopy(of: folder, installID: id)
+        let source = Source(kind: .folder, path: copy.path, id: id, origin: origin)
+        do {
+            try await load(source, isNewInstall: true, remember: remember)
+        } catch {
+            ChromeExtensionImporter.removeManagedCopy(at: copy)
+            throw error
+        }
     }
 
     /// Load the Safari web extensions bundled inside an app (or a single .appex).
@@ -111,6 +130,9 @@ final class WebExtensionManager: NSObject {
 
     func uninstall(_ item: Installed) {
         try? controller.unload(item.context)
+        if item.source.kind == .folder {
+            ChromeExtensionImporter.removeManagedCopy(at: URL(fileURLWithPath: item.source.path))
+        }
         installed.removeAll { $0.id == item.id }
         Self.saveSources(installed.filter(\.isRemembered).map(\.source))
         var approved = Self.approvedIDs()

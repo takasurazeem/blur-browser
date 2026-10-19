@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import WebKit
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Blur-Browser", category: "NativeMessaging")
 
 /// Bridges `browser.runtime.sendNativeMessage` / `connectNative` to
 /// Chrome-style native messaging hosts: a JSON manifest naming an executable
@@ -53,15 +56,20 @@ final class NativeMessagingBridge {
         let key = ObjectIdentifier(port)
         connections[key] = host
 
+        let name = port.applicationIdentifier ?? "?"
         host.onMessage = { [weak port] message in
+            logger.debug("\(name, privacy: .public) → extension: \(Self.typeSummary(message), privacy: .public)")
             port?.sendMessage(message) { _ in }
         }
         host.onExit = { [weak self, weak port] error in
+            logger.notice("\(name, privacy: .public) exited\(error == nil ? "" : " with an error", privacy: .public)")
             self?.connections[key] = nil
             port?.disconnect(throwing: error)
         }
         port.messageHandler = { [weak host] message, _ in
-            if let message { host?.send(message) }
+            guard let message else { return }
+            logger.debug("extension → \(name, privacy: .public): \(Self.typeSummary(message), privacy: .public)")
+            host?.send(message)
         }
         port.disconnectHandler = { [weak self] _ in
             self?.connections.removeValue(forKey: key)?.terminate()
@@ -80,9 +88,27 @@ final class NativeMessagingBridge {
             origin = "webkit-extension://\(context.uniqueIdentifier)/"
         }
         guard manifest.allowedOrigins.contains(origin) else {
+            logger.error("\(name, privacy: .public) refused: \(origin, privacy: .public) isn't in its allowed_origins")
             throw NativeMessagingError.originNotAllowed(name, origin)
         }
+        logger.notice("Launching native host \(name, privacy: .public) (\(manifest.path.path, privacy: .public)) for \(origin, privacy: .public)")
         return try NativeHostProcess(executable: manifest.path, origin: origin)
+    }
+
+    /// The `type` fields of a message (nested up to a few levels), e.g.
+    /// "NotificationModern/BrowserVerificationFailed". Logged instead of the
+    /// message itself, which can hold secrets.
+    nonisolated static func typeSummary(_ message: Any) -> String {
+        var types: [String] = []
+        func walk(_ value: Any, depth: Int) {
+            guard depth < 4, let dict = value as? [String: Any] else { return }
+            if let type = dict["type"] as? String { types.append(type) }
+            for key in ["invocation", "content", "data", "response"] {
+                if let child = dict[key] { walk(child, depth: depth + 1) }
+            }
+        }
+        walk(message, depth: 0)
+        return types.isEmpty ? "(no type)" : types.joined(separator: "/")
     }
 
     struct HostManifest {

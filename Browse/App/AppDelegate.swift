@@ -245,6 +245,35 @@ extension AppDelegate: NSMenuDelegate {
         Task { await installExtension { try await WebExtensionManager.shared.installUnpacked(at: url) } }
     }
 
+    /// Pick an extension already installed in a Chromium browser on this Mac
+    /// (Chrome, Arc, Brave, Edge, …) and load a copy of it. This is the easy
+    /// way to get extensions like 1Password, whose Chrome ID must be kept.
+    @objc func importChromiumExtension(_ sender: Any?) {
+        let found = ChromeExtensionImporter.findInstalledChromiumExtensions()
+        let alert = NSAlert()
+        guard !found.isEmpty else {
+            alert.messageText = "No Chromium extensions found"
+            alert.informativeText = "Install the extension in Chrome, Arc, Brave or Edge first, or use Load Unpacked Extension…."
+            alert.runModal()
+            return
+        }
+        alert.messageText = "Import an extension"
+        alert.informativeText = "Blur-Browser loads its own copy; the browser you import from isn't changed."
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 380, height: 26), pullsDown: false)
+        for item in found {
+            picker.addItem(withTitle: "\(item.name) \(item.version) — \(item.browser)")
+        }
+        if let onePassword = found.firstIndex(where: { $0.id == "aeblfdkhhhdcdjpifhhbdiojplfjncoa" }) {
+            picker.selectItem(at: onePassword)
+        }
+        alert.accessoryView = picker
+        alert.addButton(withTitle: "Import")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let item = found[picker.indexOfSelectedItem]
+        Task { await installExtension { try await WebExtensionManager.shared.installUnpacked(at: item.folder) } }
+    }
+
     @objc func loadSafariExtension(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
