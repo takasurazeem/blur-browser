@@ -215,6 +215,29 @@ content):
   with Developer ID.
 - Account and item traffic: connected.
 
+### Which 1Password extension to use
+
+Both load; **1Password for Safari is the default** in this install.
+
+| | 1Password for Safari (`/Applications/1Password for Safari.app` › `1Password.appex`) | 1Password Chrome extension (imported from Arc/Chrome) |
+|---|---|---|
+| Built for | WebKit (MV2, background page) | Chrome (MV3 service worker) |
+| Needs the compat shim | No: background starts cleanly | Yes (`notifications`, `downloads`, `idle`, …) |
+| Updates | With the Safari app (App Store), loaded in place | Manual re-import of a copy |
+| Welcome → Continue | "Start setup / Add account / Sign in", inside the extension | Hands off to `my.1password.com/signin` |
+| Desktop-app unlock (Touch ID) | Never: its native side is a Safari-only app extension | Possible with a Developer ID-signed browser |
+| Noise | Retries `runtime.sendNativeMessage` with no host name (fails fast; WebKit logs it) | Retries `com.1password.1password` (`BrowserVerificationFailed`) |
+
+Without a Developer ID certificate neither can reach the desktop app, so the
+Safari build wins: no shim, auto-updates, and it's made for this engine.
+With a paid account and `scripts/install-app.sh`, the Chrome copy can unlock
+through the desktop app instead.
+
+To switch: Extensions › Remove Extension › 1Password…, then **Load Safari
+Extension from App…** › `/Applications/1Password for Safari.app`, or
+**Import from Chrome, Arc or Brave…** for the Chrome copy. Load only one at a
+time: both inject into every page.
+
 ### With a free Apple developer account: 1Password without the desktop app
 
 No Developer ID means no desktop-app connection, but the extension can sign
@@ -231,9 +254,10 @@ in to your 1Password account by itself:
    with your account password; Touch ID unlock needs the desktop app
    connection.
 
-Verified 2026-10-19 in /Applications/Blur-Browser.app: the welcome page
-renders, **Continue** reaches the sign-in form at
-`my.ent.1password.com/signin?a=new&auth-only=1`. Sign-in itself, filling and
+Verified 2026-10-19 in /Applications/Blur-Browser.app: both builds' welcome
+pages render. For the Chrome copy, **Continue** reaches the sign-in form at
+`my.ent.1password.com/signin?a=new&auth-only=1`. For the Safari build it
+reaches "Add account / Sign in" (checked headlessly). Sign-in itself, filling and
 passkeys were not tested; they need your account.
 
 ### Passkeys through 1Password
