@@ -123,7 +123,52 @@
   };
   const illegal = function () { throw new TypeError('Illegal constructor'); };
 
+  const isNative = (fn) => {
+    try { return typeof fn === 'function' && /\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(fn)); }
+    catch (e) { return false; }
+  };
+
+  const findDescriptor = (proto, key) => {
+    for (let p = proto; p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, key);
+      if (d) return d;
+    }
+    return undefined;
+  };
+
+  // Defines a WebAuthn interface, or, when WebKit already has it (WebAuthn
+  // left on for extensions such as 1Password), wraps its members so our
+  // objects work and WebKit's (or an extension's) objects keep theirs.
+  // `instanceof PublicKeyCredential` then holds for both.
   const defineInterface = (name, parent, members) => {
+    const existing = typeof window[name] === 'function' ? window[name] : null;
+    if (existing) {
+      for (const [key, value] of Object.entries(members)) {
+        const original = findDescriptor(existing.prototype, key);
+        if (typeof value === 'function') {
+          const nativeFn = original && original.value;
+          Object.defineProperty(existing.prototype, key, {
+            value: function (...args) {
+              if (slots.has(this)) return value.apply(this, args);
+              if (typeof nativeFn === 'function') return nativeFn.apply(this, args);
+              throw new TypeError('Illegal invocation');
+            },
+            writable: true, configurable: true,
+          });
+        } else {
+          const nativeGet = original && original.get;
+          Object.defineProperty(existing.prototype, key, {
+            get: function () {
+              if (slots.has(this)) return value.get.call(this);
+              if (nativeGet) return nativeGet.call(this);
+              throw new TypeError('Illegal invocation');
+            },
+            enumerable: true, configurable: true,
+          });
+        }
+      }
+      return existing;
+    }
     const ctor = { [name]: function () { illegal(); } }[name];
     ctor.prototype = Object.create(parent ? parent.prototype : Object.prototype);
     Object.defineProperty(ctor.prototype, 'constructor', { value: ctor, writable: true, configurable: true });
@@ -215,8 +260,13 @@
       return o;
     },
   };
+  // WebKit's versions would describe the platform authenticator we can't
+  // reach; an extension's replacement (non-native) is left alone.
   for (const [key, value] of Object.entries(statics)) {
-    Object.defineProperty(PublicKeyCredential, key, { value, writable: true, configurable: true });
+    const current = PublicKeyCredential[key];
+    if (current === undefined || isNative(current)) {
+      Object.defineProperty(PublicKeyCredential, key, { value, writable: true, configurable: true });
+    }
   }
 
   const makeCredential = (data, isCreate) => {
@@ -319,17 +369,20 @@
     preventSilentAccess() { return Promise.resolve(); },
   };
 
-  let container;
   if (native) {
-    container = native;
+    // Wrap WebKit's methods on the prototype. Anything that wraps
+    // navigator.credentials later (1Password) captures these and falls back
+    // to them when it declines. If an extension already replaced them, leave
+    // its wrapper alone.
     const proto = Object.getPrototypeOf(native);
     for (const key of ['create', 'get']) {
+      if (!isNative(proto[key]) || Object.prototype.hasOwnProperty.call(native, key)) continue;
       Object.defineProperty(proto, key, { value: methods[key], writable: true, configurable: true, enumerable: true });
     }
   } else {
     const CredentialsContainer = typeof window.CredentialsContainer === 'function' ? window.CredentialsContainer
       : defineInterface('CredentialsContainer', null, {});
-    container = Object.create(CredentialsContainer.prototype);
+    const container = Object.create(CredentialsContainer.prototype);
     for (const [key, value] of Object.entries(methods)) {
       Object.defineProperty(CredentialsContainer.prototype, key, { value, writable: true, configurable: true, enumerable: true });
     }

@@ -207,6 +207,12 @@ Behaviour worth knowing:
   (within 10 s, or `navigator.userActivation.isActive`), the sheet first asks
   "Use a security key?" instead of rejecting, since sites like Google start
   the key prompt on page load. The key still needs a touch either way.
+- **Extensions.** When any web extension is installed, WebKit's WebAuthn
+  stays on so password managers that wrap `navigator.credentials` (1Password
+  only installs its wrapper if it exists) can. The shim then wraps WebKit's
+  `create`/`get` and `PublicKeyCredential` members instead of replacing
+  them, so an extension that runs later and declines a request falls back to
+  the security key path. An extension that replaced them first is left alone.
 - **Cross-origin iframes** may call `get()` (clientDataJSON then carries
   `crossOrigin: true` and `topOrigin`) but not `create()`, because the
   frame's permissions policy isn't visible to the app.
