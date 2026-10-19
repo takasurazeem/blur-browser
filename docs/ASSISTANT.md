@@ -38,3 +38,21 @@ arbitrary loads because a browser must reach arbitrary origins.
 
 No agent tools (click/type/navigate) and no permission modes yet — chat, page context,
 and provider switching only.
+
+## Loopback relay (when macOS refuses local network entirely)
+
+If the app still reports `[-1009]` with `Local network prohibited` even when ad-hoc
+signed, run the relay and point the provider at loopback (macOS never gates 127.0.0.1):
+
+```bash
+python3 tools/relay.py --listen 127.0.0.1:18080 --target 192.168.1.150:8080
+# then set the provider base URL to http://127.0.0.1:18080/v1
+```
+
+An instance is installed as a LaunchAgent (`~/Library/LaunchAgents/app.sidecar.relay.plist`),
+so it starts at login and is kept alive. Remove it with:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/app.sidecar.relay.plist
+rm ~/Library/LaunchAgents/app.sidecar.relay.plist
+```
