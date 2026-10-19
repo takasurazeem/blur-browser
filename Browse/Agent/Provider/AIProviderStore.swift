@@ -66,6 +66,11 @@ struct AIProviderConfig: Codable, Identifiable, Equatable, Sendable {
 
     /// Loopback and private-network endpoints (local model servers) work
     /// without a key; hosted APIs need one.
+    /// The stock "Local model" entry exactly as `defaultProviders()` creates it.
+    var isStockLocalPlaceholder: Bool {
+        kind == .openAICompatible && baseURL == "http://127.0.0.1:8080/v1" && model == "local"
+    }
+
     var isLocal: Bool {
         guard let host = URL(string: baseURL)?.host() else { return false }
         if host == "localhost" || host == "::1" || host.hasSuffix(".local") { return true }
@@ -103,6 +108,11 @@ final class AIProviderStore {
     private static let activeKey = "ai.activeProviderID"
     private static let legacyClaudeModelKey = "ai.claude.model"
     private static let assistantMigratedKey = "ai.migratedAssistantJSON"
+    private static let legacyBundleMigratedKey = "ai.migratedLegacyBundleDefaults"
+    /// The bundle id the app shipped with before signing moved to
+    /// Config/Signing.xcconfig. Forks that change the bundle id get a fresh
+    /// defaults domain, so providers saved under this one are imported once.
+    private static let legacyBundleID = "com.Blur-Browser.app"
 
     /// The built-in Claude entry keeps the Keychain account the first agent
     /// release used, so an already-saved key still works.
@@ -125,6 +135,7 @@ final class AIProviderStore {
         activeID = defaults.string(forKey: Self.activeKey).flatMap(UUID.init) ?? Self.defaultClaudeID
         if !providers.contains(where: { $0.id == activeID }) { activeID = providers[0].id }
         migrateAssistantConfigIfNeeded()
+        migrateLegacyBundleDefaultsIfNeeded()
         save()
     }
 
@@ -284,6 +295,44 @@ final class AIProviderStore {
         }
         try? FileManager.default.removeItem(at: url)
         defaults.set(true, forKey: Self.assistantMigratedKey)
+    }
+
+    // MARK: Migration from the previous bundle id
+
+    /// Imports providers saved under `legacyBundleID` when the app now runs
+    /// under a different bundle id. Saved entries win over stock ones; if the
+    /// active provider is still the untouched stock "Local model" placeholder,
+    /// the first imported local provider takes over.
+    private func migrateLegacyBundleDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.legacyBundleMigratedKey) else { return }
+        defaults.set(true, forKey: Self.legacyBundleMigratedKey)
+
+        guard Bundle.main.bundleIdentifier != Self.legacyBundleID,
+              let legacyDefaults = UserDefaults(suiteName: Self.legacyBundleID),
+              let data = legacyDefaults.data(forKey: Self.providersKey),
+              let legacy = try? JSONDecoder().decode([AIProviderConfig].self, from: data),
+              !legacy.isEmpty
+        else { return }
+
+        let imported = legacy.filter { old in !providers.contains { $0.id == old.id } }
+        guard !imported.isEmpty else { return }
+
+        let wasOnPlaceholder = active.isStockLocalPlaceholder
+        providers.removeAll { stock in
+            (stock.isStockLocalPlaceholder && imported.contains(where: \.isLocal))
+                || (stock.id != Self.defaultClaudeID && !hasKey(stock)
+                    && imported.contains { $0.kind == stock.kind && $0.baseURL == stock.baseURL })
+        }
+        providers.append(contentsOf: imported)
+
+        if let legacyActive = legacyDefaults.string(forKey: Self.activeKey).flatMap(UUID.init),
+           providers.contains(where: { $0.id == legacyActive }) {
+            activeID = legacyActive
+        } else if wasOnPlaceholder, let local = imported.first(where: \.isLocal) {
+            activeID = local.id
+        }
+        if !providers.contains(where: { $0.id == activeID }) { activeID = providers[0].id }
     }
 
     static var legacyAssistantFileURL: URL {
