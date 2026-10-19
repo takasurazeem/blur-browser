@@ -15,6 +15,8 @@ final class SecurityKeySheet: NSObject {
     private let titleLabel = NSTextField(wrappingLabelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let qrView = NSImageView()
+    private let noteLabel = NSTextField(wrappingLabelWithString: "")
     private let pinField = NSSecureTextField()
     private let confirmField = NSSecureTextField()
     private let accountStack = NSStackView()
@@ -45,7 +47,16 @@ final class SecurityKeySheet: NSObject {
         messageLabel.textColor = .secondaryLabelColor
         errorLabel.font = .systemFont(ofSize: 12)
         errorLabel.textColor = .systemRed
-        for label in [titleLabel, messageLabel, errorLabel] {
+        noteLabel.font = .systemFont(ofSize: 11)
+        noteLabel.textColor = .secondaryLabelColor
+        qrView.imageScaling = .scaleProportionallyUpOrDown
+        qrView.translatesAutoresizingMaskIntoConstraints = false
+        qrView.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        qrView.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        qrView.wantsLayer = true
+        qrView.layer?.backgroundColor = NSColor.white.cgColor
+        qrView.layer?.cornerRadius = 6
+        for label in [titleLabel, messageLabel, errorLabel, noteLabel] {
             label.preferredMaxLayoutWidth = 290
             label.isSelectable = false
         }
@@ -67,7 +78,7 @@ final class SecurityKeySheet: NSObject {
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
 
-        let text = NSStackView(views: [titleLabel, messageLabel, errorLabel, pinField, confirmField, accountStack])
+        let text = NSStackView(views: [titleLabel, messageLabel, qrView, noteLabel, errorLabel, pinField, confirmField, accountStack])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 8
@@ -135,6 +146,8 @@ final class SecurityKeySheet: NSObject {
         pinField.isHidden = true
         confirmField.isHidden = true
         accountStack.isHidden = true
+        qrView.isHidden = true
+        noteLabel.isHidden = true
         if spinning { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         primaryButton.title = primary ?? ""
         primaryButton.isHidden = primary == nil
@@ -147,6 +160,24 @@ final class SecurityKeySheet: NSObject {
 
     func showStatus(_ title: String, _ message: String) {
         configure(title: title, message: message, spinning: true)
+    }
+
+    /// The first screen: a QR code for a phone, while also waiting for a
+    /// security key to be plugged in.
+    func showChooser(_ title: String, _ message: String, qr: CGImage?) {
+        configure(title: title, message: message, spinning: true, symbol: "qrcode")
+        if let qr {
+            qrView.image = NSImage(cgImage: qr, size: NSSize(width: 180, height: 180))
+            qrView.isHidden = false
+        }
+        panel.setContentSize(panel.contentView?.fittingSize ?? panel.frame.size)
+    }
+
+    /// A small line under the QR code, e.g. Bluetooth state; nil hides it.
+    func setNote(_ note: String?) {
+        noteLabel.stringValue = note ?? ""
+        noteLabel.isHidden = note == nil || qrView.isHidden
+        panel.setContentSize(panel.contentView?.fittingSize ?? panel.frame.size)
     }
 
     // MARK: Questions

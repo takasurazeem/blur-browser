@@ -26,6 +26,9 @@ final class SecurityKeyRequest {
     private let discovery = SecurityKeyDiscovery()
     private var site = ""
     private var showingTouch = false
+    private var scanner: CableAdvertScanner?
+    private var tunnel: CableTunnel?
+    private var usingPhone = false
 
     init(origin: WebOrigin, topOrigin: WebOrigin?) {
         self.origin = origin
@@ -33,6 +36,8 @@ final class SecurityKeyRequest {
     }
 
     func finish() {
+        scanner?.stop()
+        tunnel?.close()
         discovery.stop()
         sheet.dismiss()
     }
@@ -50,7 +55,7 @@ final class SecurityKeyRequest {
 
         let clientDataJSON = ClientData.json(type: "webauthn.create", challenge: options.challenge, origin: origin, topOrigin: topOrigin)
         let clientDataHash = Data(SHA256.hash(data: clientDataJSON))
-        let auth = try await connect(prompt: "Insert your security key", detail: "Then touch it to create a passkey for \(site).")
+        let auth = try await connect(requestType: "mc", purpose: "create a passkey for \(site)")
         let info = auth.info
 
         let rk: Bool
@@ -76,7 +81,7 @@ final class SecurityKeyRequest {
             }
         }
 
-        let excluded = try await matchingCredential(auth, rpId: rpId, clientDataHash: clientDataHash,
+        let excluded = auth.isHybrid ? nil : try await matchingCredential(auth, rpId: rpId, clientDataHash: clientDataHash,
                                                     credentials: options.excludeCredentials)
         let excludeList: [CredentialDescriptor]
         if let excluded {
@@ -161,7 +166,7 @@ final class SecurityKeyRequest {
             "clientDataJSON": clientDataJSON.base64URLEncodedString(),
             "attestationObject": attestationObject.base64URLEncodedString(),
             "authenticatorData": authDataBytes.base64URLEncodedString(),
-            "transports": transports(info),
+            "transports": auth.isHybrid ? ["hybrid", "internal"] : transports(info),
         ]
         if let key = authData.credentialPublicKey {
             responseFields["publicKeyAlgorithm"] = key[3]?.intValue ?? 0
@@ -182,7 +187,7 @@ final class SecurityKeyRequest {
 
         let clientDataJSON = ClientData.json(type: "webauthn.get", challenge: options.challenge, origin: origin, topOrigin: topOrigin)
         let clientDataHash = Data(SHA256.hash(data: clientDataJSON))
-        let auth = try await connect(prompt: "Insert your security key", detail: "Then touch it to sign in to \(site).")
+        let auth = try await connect(requestType: "ga", purpose: "sign in to \(site)")
         let info = auth.info
 
         var allowList = options.allowCredentials
@@ -197,7 +202,8 @@ final class SecurityKeyRequest {
         // allowed credentials, without a touch, before asking for a PIN.
         var effectiveRpId = rpId
         var usedAppID = false
-        if !allowList.isEmpty, appid != nil || allowList.count > (info.maxCredentialCountInList ?? .max) {
+        // A phone shows UI for every request, so it isn't probed.
+        if !auth.isHybrid, !allowList.isEmpty, appid != nil || allowList.count > (info.maxCredentialCountInList ?? .max) {
             var found: Data?
             for candidate in [rpId] + (appid.map { [$0] } ?? []) {
                 found = try await matchingCredential(auth, rpId: candidate, clientDataHash: clientDataHash, credentials: allowList)
@@ -299,15 +305,77 @@ final class SecurityKeyRequest {
         guard ok else { throw CancellationError() }
     }
 
-    /// Waits for a key, picks one by touch if several are plugged in, and
-    /// reads its getInfo.
-    private func connect(prompt: String, detail: String) async throws -> CTAP2Authenticator {
-        sheet.showStatus(prompt, detail)
+    private enum Found {
+        case securityKey
+        case phone(CableV2.Advert)
+    }
+
+    /// Shows the QR code for a phone and waits for either the phone's BLE
+    /// advert or a security key on USB, whichever comes first.
+    private func connect(requestType: String, purpose: String) async throws -> CTAP2Authenticator {
+        let qr = CableV2.QRSession(requestType: requestType)
+        sheet.showChooser("Use your phone or a security key",
+                          "Scan this code with your iPhone or Android camera to \(purpose), or insert your security key.",
+                          qr: qr.qrImage(size: 360))
         discovery.start()
-        for await _ in discovery.changes() where !discovery.devices.isEmpty {
+        let scanner = CableAdvertScanner(eidKey: qr.eidKey)
+        self.scanner = scanner
+        let (events, continuation) = AsyncStream<Found>.makeStream()
+        scanner.onAdvert = { continuation.yield(.phone($0)) }
+        scanner.onStatus = { [weak self] status in
+            switch status {
+            case .poweredOff: self?.sheet.setNote("Turn on Bluetooth to use your phone.")
+            case .unauthorized: self?.sheet.setNote("Allow Blur-Browser to use Bluetooth in System Settings › Privacy & Security › Bluetooth to use your phone.")
+            case .unsupported: self?.sheet.setNote("This Mac has no Bluetooth, so only security keys work.")
+            default: self?.sheet.setNote(nil)
+            }
+        }
+        scanner.start()
+        let discovery = self.discovery
+        let usbWatcher = Task { @MainActor in
+            for await _ in discovery.changes() where !discovery.devices.isEmpty {
+                continuation.yield(.securityKey)
+                break
+            }
+        }
+        var found: Found?
+        for await event in events {
+            found = event
             break
         }
+        usbWatcher.cancel()
+        continuation.finish()
+        scanner.stop()
         try Task.checkCancellation()
+
+        switch found {
+        case .phone(let advert)?:
+            discovery.stop()
+            usingPhone = true
+            sheet.showStatus("Connecting to your phone…", "Keep your phone nearby with its screen on.")
+            let tunnel = CableTunnel()
+            self.tunnel = tunnel
+            do {
+                try await tunnel.open(qr: qr, advert: advert)
+            } catch where !Task.isCancelled {
+                securityKeyLogger.error("caBLE: tunnel failed: \(String(describing: error), privacy: .public)")
+                throw SecurityKeyFailure(title: "Couldn't connect to your phone",
+                                         message: "Check that your phone is online and try again.")
+            }
+            let auth = CTAP2Authenticator(tunnel: tunnel, info: tunnel.info)
+            if tunnel.info == nil { try await auth.loadInfo() }
+            return auth
+        case .securityKey?:
+            return try await connectSecurityKey()
+        case nil:
+            throw CancellationError()
+        }
+    }
+
+    /// Picks a USB key by touch if several are plugged in, and reads its
+    /// getInfo.
+    private func connectSecurityKey() async throws -> CTAP2Authenticator {
+        sheet.showStatus("Connecting to your security key…", "")
         let devices = discovery.devices
         guard !devices.isEmpty else { throw CancellationError() }
 
@@ -361,6 +429,10 @@ final class SecurityKeyRequest {
     private func promptTouch(_ title: String, _ detail: String) {
         guard !showingTouch || !detail.isEmpty else { return }
         showingTouch = true
+        if usingPhone {
+            sheet.showStatus("Continue on your phone", "Follow the steps on your phone to finish with \(site).")
+            return
+        }
         sheet.showStatus(title, detail.isEmpty ? "Your security key is waiting for a touch." : detail)
     }
 
@@ -467,7 +539,10 @@ final class SecurityKeyRequest {
     }
 
     private func notRegistered() -> SecurityKeyFailure {
-        SecurityKeyFailure(title: "This security key isn't registered", message: "It has no passkey for \(site). Try a different key.")
+        if usingPhone {
+            return SecurityKeyFailure(title: "No passkey on your phone", message: "Your phone has no passkey for \(site).")
+        }
+        return SecurityKeyFailure(title: "This security key isn't registered", message: "It has no passkey for \(site). Try a different key.")
     }
 
     private func failure(for error: CTAP2Error, creating: Bool) -> Error {

@@ -122,8 +122,11 @@ final class SecurityKeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         do {
             return try await task.value.json
-        } catch is CancellationError where timedOut {
-            throw WebAuthnError.notAllowed("The operation timed out.")
+        } catch {
+            // A cancelled tunnel or HID read can surface as an I/O error.
+            guard task.isCancelled else { throw error }
+            if timedOut { throw WebAuthnError.notAllowed("The operation timed out.") }
+            throw CancellationError()
         }
     }
 

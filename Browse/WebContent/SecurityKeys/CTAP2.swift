@@ -86,6 +86,15 @@ struct PINToken {
 
 // MARK: - Authenticator
 
+/// Carries CTAP2 messages: USB HID, or the caBLE tunnel to a phone.
+@MainActor
+protocol CTAPTransport: AnyObject {
+    /// Sends `[command] ‖ CBOR` and returns `[status] ‖ CBOR`.
+    func cbor(_ request: [UInt8], onKeepalive: @escaping (UInt8) -> Void) async throws -> [UInt8]
+}
+
+extension CTAPHIDDevice: CTAPTransport {}
+
 @MainActor
 final class CTAP2Authenticator {
     enum Command: UInt8 {
@@ -102,13 +111,22 @@ final class CTAP2Authenticator {
         static let getAssertion: UInt8 = 0x02
     }
 
-    let device: CTAPHIDDevice
+    let transport: CTAPTransport
+    /// A phone over caBLE rather than a key on USB.
+    let isHybrid: Bool
     private(set) var info = AuthenticatorInfo()
     /// Gets CTAPHID keepalive status: 1 processing, 2 waiting for a touch.
     var onKeepalive: (UInt8) -> Void = { _ in }
 
     init(device: CTAPHIDDevice) {
-        self.device = device
+        transport = device
+        isHybrid = false
+    }
+
+    init(tunnel: CTAPTransport, info: AuthenticatorInfo?) {
+        transport = tunnel
+        isHybrid = true
+        if let info { self.info = info }
     }
 
     @discardableResult
@@ -116,7 +134,7 @@ final class CTAP2Authenticator {
         var request = [command.rawValue]
         if let parameters { request += parameters.encoded() }
         let keepalive = onKeepalive
-        let response = try await device.cbor(request, onKeepalive: { keepalive($0) })
+        let response = try await transport.cbor(request, onKeepalive: { keepalive($0) })
         guard let status = response.first else { throw SecurityKeyTransportError.protocolError("empty response") }
         if status == CTAP2Status.keepaliveCancel, Task.isCancelled { throw CancellationError() }
         guard status == 0 else { throw CTAP2Error(status: status) }
