@@ -86,10 +86,10 @@ struct AssistantPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onChange(of: store.messages.last?.content) { _, _ in
-                guard let last = store.messages.last else { return }
-                withAnimation(.easeOut(duration: 0.1)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+                scrollToEnd(proxy)
+            }
+            .onChange(of: store.messages.last?.reasoning) { _, _ in
+                scrollToEnd(proxy)
             }
         }
     }
@@ -158,9 +158,18 @@ struct AssistantPane: View {
                     .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
 
                 if message.content.isEmpty && message.error == nil {
-                    Text("…")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                    if message.reasoning.isEmpty {
+                        Text("…")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                    } else {
+                        Text(String(message.reasoning.suffix(700)))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                            .lineLimit(12)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     markdown(message.content)
                         .font(.system(size: 12.5))
@@ -241,6 +250,13 @@ struct AssistantPane: View {
             )
         }
         .padding(10)
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        guard let last = store.messages.last else { return }
+        withAnimation(.easeOut(duration: 0.1)) {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        }
     }
 
     private func submit() {

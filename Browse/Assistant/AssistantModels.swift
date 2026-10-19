@@ -119,12 +119,20 @@ struct AssistantMessage: Identifiable, Sendable {
     let id: UUID
     var role: Role
     var content: String
+    var reasoning: String
     var error: String?
 
-    init(id: UUID = UUID(), role: Role, content: String, error: String? = nil) {
+    init(
+        id: UUID = UUID(),
+        role: Role,
+        content: String,
+        reasoning: String = "",
+        error: String? = nil
+    ) {
         self.id = id
         self.role = role
         self.content = content
+        self.reasoning = reasoning
         self.error = error
     }
 }

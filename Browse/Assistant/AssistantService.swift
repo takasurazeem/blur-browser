@@ -10,6 +10,13 @@ enum AssistantService {
         var kind: AssistantProviderKind
     }
 
+    /// A streamed piece of the model's output. Reasoning models emit their
+    /// scratchpad first; the pane shows it dimmed while the answer is empty.
+    enum Delta: Sendable {
+        case text(String)
+        case reasoning(String)
+    }
+
     enum ServiceError: LocalizedError {
         case badURL(String)
         case badStatus(Int, String)
@@ -123,7 +130,7 @@ enum AssistantService {
 
     // MARK: Stream
 
-    static func stream(_ prepared: Prepared) -> AsyncThrowingStream<String, Error> {
+    static func stream(_ prepared: Prepared) -> AsyncThrowingStream<Delta, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -140,30 +147,22 @@ enum AssistantService {
                         throw ServiceError.badStatus(http.statusCode, text.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
 
-                    var dataLines: [String] = []
-                    for try await line in bytes.lines {
-                        if line.isEmpty {
-                            if !dataLines.isEmpty {
-                                let payload = dataLines.joined(separator: "\n")
-                                dataLines.removeAll(keepingCapacity: true)
-                                if payload == "[DONE]" { break }
-                                if let delta = decode(kind: prepared.kind, payload: payload), !delta.isEmpty {
-                                    continuation.yield(delta)
-                                }
-                            }
-                            continue
+                    // AsyncBytes.lines drops empty lines, so SSE blocks cannot be
+                    // assembled by blank-line delimiting. Each provider sends one
+                    // complete JSON object per data line, so decode line by line.
+                    for try await rawLine in bytes.lines {
+                        var line = rawLine
+                        if line.hasSuffix("\r") { line.removeLast() }
+                        if line.isEmpty || line.hasPrefix(":") { continue }
+                        guard line.hasPrefix("data:") else { continue }
+
+                        var payload = String(line.dropFirst(5))
+                        if payload.hasPrefix(" ") { payload.removeFirst() }
+                        if payload == "[DONE]" { break }
+
+                        if let delta = decode(kind: prepared.kind, payload: payload) {
+                            continuation.yield(delta)
                         }
-                        if line.hasPrefix(":") { continue }
-                        if line.hasPrefix("data:") {
-                            var value = String(line.dropFirst(5))
-                            if value.hasPrefix(" ") { value.removeFirst() }
-                            dataLines.append(value)
-                        }
-                    }
-                    if !dataLines.isEmpty,
-                       let delta = decode(kind: prepared.kind, payload: dataLines.joined(separator: "\n")),
-                       !delta.isEmpty {
-                        continuation.yield(delta)
                     }
                     continuation.finish()
                 } catch {
@@ -174,35 +173,53 @@ enum AssistantService {
         }
     }
 
-    private static func decode(kind: AssistantProviderKind, payload: String) -> String? {
+    private static func decode(kind: AssistantProviderKind, payload: String) -> Delta? {
         guard
             let data = payload.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
 
-        let text: String?
         switch kind {
         case .openai:
             let choices = object["choices"] as? [[String: Any]]
-            let delta = choices?.first?["delta"] as? [String: Any]
-            text = delta?["content"] as? String
+            guard let delta = choices?.first?["delta"] as? [String: Any] else { return nil }
+            if let content = delta["content"] as? String, !content.isEmpty {
+                return .text(clean(content))
+            }
+            if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+                return .reasoning(clean(reasoning))
+            }
+            return nil
 
         case .anthropic:
-            if object["type"] as? String == "content_block_delta" {
-                let delta = object["delta"] as? [String: Any]
-                text = delta?["text"] as? String
-            } else {
-                text = nil
+            guard object["type"] as? String == "content_block_delta",
+                  let delta = object["delta"] as? [String: Any] else { return nil }
+            if let text = delta["text"] as? String, !text.isEmpty {
+                return .text(clean(text))
             }
+            if let thinking = delta["thinking"] as? String, !thinking.isEmpty {
+                return .reasoning(clean(thinking))
+            }
+            return nil
 
         case .gemini:
             let candidates = object["candidates"] as? [[String: Any]]
             let content = candidates?.first?["content"] as? [String: Any]
-            let parts = content?["parts"] as? [[String: Any]]
-            text = parts?.compactMap { $0["text"] as? String }.joined()
+            let parts = content?["parts"] as? [[String: Any]] ?? []
+            var text = ""
+            var thought = ""
+            for part in parts {
+                guard let chunk = part["text"] as? String, !chunk.isEmpty else { continue }
+                if part["thought"] as? Bool == true { thought += chunk } else { text += chunk }
+            }
+            if !text.isEmpty { return .text(clean(text)) }
+            if !thought.isEmpty { return .reasoning(clean(thought)) }
+            return nil
         }
+    }
 
-        return text?.replacingOccurrences(of: "</think>", with: "")
+    private static func clean(_ text: String) -> String {
+        text.replacingOccurrences(of: "</think>", with: "")
             .replacingOccurrences(of: "<think>", with: "")
     }
 }

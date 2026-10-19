@@ -84,7 +84,12 @@ final class AssistantStore {
                     system: system
                 )
                 for try await delta in AssistantService.stream(prepared) {
-                    self.append(delta, to: assistantID)
+                    switch delta {
+                    case .text(let chunk):
+                        self.append(chunk, to: assistantID)
+                    case .reasoning(let chunk):
+                        self.appendReasoning(chunk, to: assistantID)
+                    }
                 }
             } catch is CancellationError {
                 // user pressed stop
@@ -114,6 +119,11 @@ final class AssistantStore {
     private func append(_ delta: String, to id: UUID) {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[index].content += delta
+    }
+
+    private func appendReasoning(_ delta: String, to id: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index].reasoning += delta
     }
 
     private func fail(_ message: String, id: UUID) {
