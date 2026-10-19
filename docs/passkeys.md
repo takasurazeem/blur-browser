@@ -166,21 +166,67 @@ keys. The system sheet never appears.
   macOS asks, but it doesn't change the result before the grant.
 - **What the app does now:** `Browse/WebContent/PasskeySupport.swift` checks
   the running app's signature. Without the entitlement it turns off WebKit's
-  `WebAuthenticationEnabled`, so pages see no `PublicKeyCredential` and skip
-  straight to their fallbacks (password, Google's phone prompt, "try another
-  way") instead of a broken passkey prompt. The app logs
+  `WebAuthenticationEnabled` and installs Blur-Browser's own CTAP2 client for
+  USB security keys instead (see [Security keys without the
+  entitlement](#security-keys-without-the-entitlement)). The app logs
   `Passkeys disabled: missing …` once at launch.
 - **Associated domains don't help a browser.** With an application
   identifier, the agent would accept a site only if the app listed it under
   `webcredentials:` and the site's `apple-app-site-association` file named
   the app. That's impossible for arbitrary sites like Google.
 - **Real alternatives, not built:**
-  - Implement CTAP2 over USB HID ourselves (what Chrome and Firefox do on
-    macOS) and bridge it into the page with an injected
-    `navigator.credentials` shim. That gets security keys working without
-    Apple. It's a large job: CTAP framing, CBOR, and the PIN protocol for
-    user verification.
+  - CTAP2 over USB HID, done ourselves: now built, see below.
   - The phone/QR flow would also need caBLE v2 (BLE advertising, a tunnel
     service, and the Noise handshake), which is much larger.
   - `ASWebAuthenticationSession` runs Safari's stack, but its cookies land in
     Safari's store, so the tab doesn't come out signed in.
+
+## Security keys without the entitlement
+
+`Browse/WebContent/SecurityKeys/` talks to USB FIDO2 keys directly, the way
+Chrome and Firefox do on macOS, so YubiKeys and similar keys work before
+Apple grants the entitlement. It's only installed when
+`PasskeySupport.isAvailable` is false; with the entitlement WebKit's native
+WebAuthn is left alone.
+
+| File | Role |
+|---|---|
+| `Browse/JS/securityKeyShim.js` | `navigator.credentials` + `PublicKeyCredential` for the page world of every frame, posting to the `blurSecurityKey` handler |
+| `SecurityKeyBridge.swift` | Message handler with reply. Takes the origin from `WKFrameInfo.securityOrigin`, applies the timeout, AbortSignal and one-request-per-window rules |
+| `WebAuthnOrigin.swift` | HTTPS (or localhost) only, no IP addresses, rpId must be the host or a registrable suffix, appid check, clientDataJSON |
+| `WebAuthnOptions.swift` | Parses the options, COSE → SPKI for `getPublicKey()` |
+| `SecurityKeyRequest.swift` | create()/get(): pick a key, PIN or fingerprint, makeCredential/getAssertion, account choice |
+| `CTAP2.swift` | CTAP2 commands and PIN/UV auth protocols 1 and 2 (ECDH P-256 via CryptoKit, AES-256-CBC via CommonCrypto) |
+| `CTAPHID.swift` | CTAPHID framing over IOKit HID, usage page `0xF1D0` |
+| `CBOR.swift` | The CBOR subset CTAP2 needs, canonical map order |
+| `SecurityKeySheet.swift` | The AppKit sheet: insert/touch, PIN, new PIN, account choice, errors |
+
+Behaviour worth knowing:
+
+- **User activation.** If the call doesn't follow a click or key press
+  (within 10 s, or `navigator.userActivation.isActive`), the sheet first asks
+  "Use a security key?" instead of rejecting, since sites like Google start
+  the key prompt on page load. The key still needs a touch either way.
+- **Extensions.** When any web extension is installed, WebKit's WebAuthn
+  stays on so password managers that wrap `navigator.credentials` (1Password
+  only installs its wrapper if it exists) can. The shim then wraps WebKit's
+  `create`/`get` and `PublicKeyCredential` members instead of replacing
+  them, so an extension that runs later and declines a request falls back to
+  the security key path. An extension that replaced them first is left alone.
+- **Cross-origin iframes** may call `get()` (clientDataJSON then carries
+  `crossOrigin: true` and `topOrigin`) but not `create()`, because the
+  frame's permissions policy isn't visible to the app.
+- **appid** (U2F-era registrations, used by Google): the key is probed
+  silently (`up: false`) under the rpId and then the appid; the one that
+  holds the credential is used and `getClientExtensionResults().appid` says
+  which.
+- **Attestation** `none` (the default) is replaced with `fmt: "none"`; the
+  AAGUID is kept.
+- **The public suffix check** is a built-in list (every TLD plus common
+  multi-label and hosting suffixes); macOS has no public API for the PSL.
+- **Not supported:** U2F-only keys (no CTAP2), NFC/BLE, the phone/QR
+  (hybrid) flow, iCloud Keychain passkeys, conditional mediation (autofill
+  UI; such calls stay pending until aborted), and the `prf`, `hmac-secret`
+  and `largeBlob` extensions.
+
+Logs: `/usr/bin/log show --last 5m --predicate 'category == "SecurityKeys"'`.
