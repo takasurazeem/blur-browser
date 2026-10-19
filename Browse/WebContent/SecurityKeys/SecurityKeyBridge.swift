@@ -103,6 +103,14 @@ final class SecurityKeyBridge: NSObject, WKScriptMessageHandlerWithReply {
                 if !Task.isCancelled { await request.sheet.showFailure(failure.title, failure.message) }
                 throw failure
             }
+            catch let error where request.usingPhone && !Task.isCancelled
+                        && !(error is WebAuthnError) && !(error is CancellationError) {
+                // The phone closes the tunnel when the user cancels there or it
+                // has no passkey for the site.
+                await request.sheet.showFailure("Your phone ended the request",
+                                                "If you didn't cancel on the phone, it may not have a passkey for this site.")
+                throw error
+            }
         }
         Self.active[id] = Active(id: id, task: task, request: request, window: window)
         request.sheet.onCancel = { Self.cancel(id) }

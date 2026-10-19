@@ -28,7 +28,7 @@ final class SecurityKeyRequest {
     private var showingTouch = false
     private var scanner: CableAdvertScanner?
     private var tunnel: CableTunnel?
-    private var usingPhone = false
+    private(set) var usingPhone = false
 
     init(origin: WebOrigin, topOrigin: WebOrigin?) {
         self.origin = origin
