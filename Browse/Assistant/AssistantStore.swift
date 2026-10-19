@@ -91,7 +91,13 @@ final class AssistantStore {
             } catch let error as URLError where error.code == .cancelled {
                 // user pressed stop
             } catch {
-                self.fail(error.localizedDescription, id: assistantID)
+                let description: String
+                if let urlError = error as? URLError {
+                    description = "\(urlError.localizedDescription) [\(urlError.code.rawValue)] — \(provider.baseURL)"
+                } else {
+                    description = error.localizedDescription
+                }
+                self.fail(description, id: assistantID)
             }
 
             self.isStreaming = false
