@@ -21,6 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // them encrypted in the app's sandboxed container.
         UserDefaults.standard.removeObject(forKey: "persistedCookies")
 
+        WebExtensionManager.shared.restore()
+        #if DEBUG
+        // `-BlurLoadExtension /path/to/unpacked` loads an extension for this run
+        // (asks for consent like a normal install; not remembered).
+        if let path = UserDefaults.standard.string(forKey: "BlurLoadExtension") {
+            Task { try? await WebExtensionManager.shared.installUnpacked(at: URL(fileURLWithPath: path), remember: false) }
+        }
+        #endif
+
         openNewWindow()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -215,5 +224,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func selectTab(at index: Int) {
         guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController else { return }
         wc.selectTab(at: index)
+    }
+}
+
+// MARK: - Extensions
+
+extension AppDelegate: NSMenuDelegate {
+    @objc func loadUnpackedExtension(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.message = "Choose an extension folder (the one containing manifest.json)"
+        panel.prompt = "Load"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await installExtension { try await WebExtensionManager.shared.installUnpacked(at: url) } }
+    }
+
+    @objc func loadSafariExtension(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.application, .applicationExtension]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.message = "Choose an app that contains a Safari web extension"
+        panel.prompt = "Load"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await installExtension { try await WebExtensionManager.shared.installSafariExtensions(from: url) } }
+    }
+
+    private func installExtension(_ install: () async throws -> Void) async {
+        do {
+            try await install()
+        } catch WebExtensionManager.ExtensionError.declined {
+            return
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Couldn’t load the extension"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    /// Rebuilds Extensions › Remove Extension each time it opens.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let installed = WebExtensionManager.shared.installed
+        if installed.isEmpty {
+            menu.addItem(withTitle: "No Extensions", action: nil, keyEquivalent: "").isEnabled = false
+            return
+        }
+        for item in installed {
+            let menuItem = menu.addItem(withTitle: item.displayName, action: #selector(removeExtension(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.id
+        }
+    }
+
+    @objc private func removeExtension(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let item = WebExtensionManager.shared.installed.first(where: { $0.id == id }) else { return }
+        WebExtensionManager.shared.uninstall(item)
     }
 }

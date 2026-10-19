@@ -256,6 +256,10 @@ final class BrowserTab: Identifiable {
         config.websiteDataStore = .default()
         config.processPool = BrowserTab.sharedProcessPool
 
+        // Web extensions: content scripts, tabs/windows APIs and action popups
+        // all go through the one app-wide controller.
+        config.webExtensionController = WebExtensionManager.shared.controller
+
         // Early hide — documentStart, all frames
         if let earlyHideURL = Bundle.main.url(forResource: "content-filter", withExtension: "js"),
            let earlyHideSource = try? String(contentsOf: earlyHideURL) {

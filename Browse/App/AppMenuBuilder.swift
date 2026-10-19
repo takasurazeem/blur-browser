@@ -83,6 +83,19 @@ enum AppMenuBuilder {
         historyMenuItem.submenu = historyMenu
         mainMenu.addItem(historyMenuItem)
 
+        // Extensions menu
+        let extensionsMenu = NSMenu(title: "Extensions")
+        addItem(to: extensionsMenu, title: "Load Unpacked Extension...", action: #selector(AppDelegate.loadUnpackedExtension(_:)), key: "", target: delegate)
+        addItem(to: extensionsMenu, title: "Load Safari Extension from App...", action: #selector(AppDelegate.loadSafariExtension(_:)), key: "", target: delegate)
+        extensionsMenu.addItem(.separator())
+        let removeItem = extensionsMenu.addItem(withTitle: "Remove Extension", action: nil, keyEquivalent: "")
+        let removeMenu = NSMenu(title: "Remove Extension")
+        removeMenu.delegate = delegate
+        removeItem.submenu = removeMenu
+        let extensionsMenuItem = NSMenuItem()
+        extensionsMenuItem.submenu = extensionsMenu
+        mainMenu.addItem(extensionsMenuItem)
+
         // Window menu
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")

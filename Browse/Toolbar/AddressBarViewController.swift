@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 
 @MainActor
 final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
@@ -19,6 +20,11 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
     private let shareButton = NSButton()
     private let moreButton = NSButton()
     private let progressBar = NSView()
+    /// Web extension toolbar buttons get their own glass capsule, left of
+    /// [reload · share · focus]; hidden when no extension has an action.
+    private let extensionsStack = NSStackView()
+    private let extensionsGlass = NSGlassEffectView()
+    private var extensionButtons: [String: NSButton] = [:]
     private var progressWidthConstraint: NSLayoutConstraint!
     private var pendingProgress: (Double, Bool)?
 
@@ -105,7 +111,20 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
         let leftGroup = makeGlassGroup([sidebarToggleButton, backButton, forwardButton])
         let rightGroup = makeGlassGroup([reloadButton, shareButton, moreButton])
 
-        for v in [leftGroup, urlGlass, rightGroup] as [NSView] {
+        extensionsStack.orientation = .horizontal
+        extensionsStack.spacing = 0
+        extensionsStack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        extensionsGlass.contentView = extensionsStack
+        extensionsGlass.cornerRadius = Layout.toolbarControlHeight / 2
+        extensionsGlass.isHidden = true
+
+        // Hidden capsules are detached, so the URL bar grows into their space.
+        let trailingGroups = NSStackView(views: [extensionsGlass, rightGroup])
+        trailingGroups.orientation = .horizontal
+        trailingGroups.spacing = 10
+        trailingGroups.detachesHiddenViews = true
+
+        for v in [leftGroup, urlGlass, trailingGroups] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
@@ -130,13 +149,14 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
             leftGroup.heightAnchor.constraint(equalToConstant: controlHeight),
 
             highPri(urlGlass.leadingAnchor.constraint(equalTo: leftGroup.trailingAnchor, constant: 10)),
-            highPri(urlGlass.trailingAnchor.constraint(equalTo: rightGroup.leadingAnchor, constant: -10)),
+            highPri(urlGlass.trailingAnchor.constraint(equalTo: trailingGroups.leadingAnchor, constant: -10)),
             urlGlass.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             urlGlass.heightAnchor.constraint(equalToConstant: controlHeight),
 
-            highPri(rightGroup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4)),
-            rightGroup.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            highPri(trailingGroups.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4)),
+            trailingGroups.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             rightGroup.heightAnchor.constraint(equalToConstant: controlHeight),
+            extensionsGlass.heightAnchor.constraint(equalToConstant: controlHeight),
 
             highPri(lockIcon.leadingAnchor.constraint(equalTo: urlContainer.leadingAnchor, constant: 14)),
             lockIcon.centerYAnchor.constraint(equalTo: urlContainer.centerYAnchor),
@@ -242,6 +262,7 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
         for button in [sidebarToggleButton, backButton, forwardButton, reloadButton, shareButton, moreButton] {
             button.contentTintColor = Colors.foregroundSecondary
         }
+        reloadExtensionButtons()
 
         urlField.textColor = Colors.foregroundPrimary
         lockIcon.contentTintColor = Colors.foregroundSecondary
@@ -303,6 +324,96 @@ final class AddressBarViewController: NSViewController, NSTextFieldDelegate {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             progressWidthConstraint.animator().constant = targetWidth
         }
+    }
+
+    // MARK: - Web extension buttons
+
+    /// Rebuild one button per installed extension that has a toolbar action,
+    /// reflecting the action's state for the selected tab.
+    func reloadExtensionButtons() {
+        let manager = WebExtensionManager.shared
+        guard let windowController = view.window?.windowController as? BrowserWindowController else {
+            extensionsGlass.isHidden = manager.installed.isEmpty
+            return
+        }
+        var seen = Set<String>()
+        for item in manager.installed {
+            guard let action = manager.action(for: item.context, in: windowController) else { continue }
+            seen.insert(item.id)
+            let button = extensionButtons[item.id] ?? makeExtensionButton(id: item.id)
+            let icon = action.icon(for: CGSize(width: 16, height: 16))
+                ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+            icon?.size = NSSize(width: 16, height: 16)
+            button.image = icon
+            button.contentTintColor = action.icon(for: CGSize(width: 16, height: 16)) == nil ? Colors.foregroundSecondary : nil
+            button.toolTip = action.label.isEmpty ? item.displayName : action.label
+            button.isEnabled = action.isEnabled
+            setBadge(action.badgeText, on: button)
+        }
+        for (id, button) in extensionButtons where !seen.contains(id) {
+            extensionsStack.removeArrangedSubview(button)
+            button.removeFromSuperview()
+            extensionButtons[id] = nil
+        }
+        extensionsGlass.isHidden = extensionButtons.isEmpty
+    }
+
+    private func makeExtensionButton(id: String) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.bezelStyle = .accessoryBarAction
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.identifier = NSUserInterfaceItemIdentifier(id)
+        button.target = self
+        button.action = #selector(extensionButtonTapped(_:))
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 30),
+            button.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        extensionsStack.addArrangedSubview(button)
+        extensionButtons[id] = button
+        return button
+    }
+
+    private func setBadge(_ text: String, on button: NSButton) {
+        let badgeID = NSUserInterfaceItemIdentifier("badge")
+        let existing = button.subviews.first { $0.identifier == badgeID } as? NSTextField
+        guard !text.isEmpty else {
+            existing?.removeFromSuperview()
+            return
+        }
+        let badge = existing ?? {
+            let label = NSTextField(labelWithString: "")
+            label.identifier = badgeID
+            label.font = .systemFont(ofSize: 8, weight: .bold)
+            label.textColor = .white
+            label.alignment = .center
+            label.wantsLayer = true
+            label.layer?.backgroundColor = Colors.accentPrimary.cgColor
+            label.layer?.cornerRadius = 5
+            label.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -1),
+                label.topAnchor.constraint(equalTo: button.topAnchor, constant: 1),
+                label.heightAnchor.constraint(equalToConstant: 10),
+                label.widthAnchor.constraint(greaterThanOrEqualToConstant: 10),
+            ])
+            return label
+        }()
+        badge.stringValue = String(text.prefix(4))
+    }
+
+    @objc private func extensionButtonTapped(_ sender: NSButton) {
+        let manager = WebExtensionManager.shared
+        guard let id = sender.identifier?.rawValue,
+              let item = manager.installed.first(where: { $0.id == id }),
+              let windowController = view.window?.windowController as? BrowserWindowController else { return }
+        // Anchor the popup (if any) under the clicked button.
+        manager.popupAnchor = { [weak sender] _ in sender }
+        manager.performAction(for: item.context, in: windowController)
     }
 
     // MARK: - Actions

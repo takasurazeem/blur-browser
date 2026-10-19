@@ -73,6 +73,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
         window?.contentViewController = splitVC
 
+        WebExtensionManager.shared.register(self)
+        splitVC.addressBar.reloadExtensionButtons()
+
         // Prevent the address bar from auto-focusing on launch.
         // Setting initialFirstResponder to the plain content view means AppKit
         // won't walk the key view loop and land on the URL text field when the
@@ -85,7 +88,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             forName: NSWindow.didBecomeKeyNotification,
             object: window,
             queue: .main
-        ) { [weak window, weak splitVC] _ in
+        ) { [weak self, weak window, weak splitVC] _ in
+            MainActor.assumeIsolated {
+                if let self { WebExtensionManager.shared.windowDidBecomeKey(self) }
+            }
             guard let window, let splitView = splitVC?.view else { return }
             // If the first responder is a text field's field editor, clear it
             if window.firstResponder is NSText {
@@ -101,7 +107,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             var lastLoading: Bool = false
             var lastDownloadSignature: String = ""
             var lastThemeID: ThemeID? = ThemeStore.shared.currentThemeID
+            var lastExtensionRevision = WebExtensionManager.shared.actionsRevision
             while !Task.isCancelled {
+                // Report tab changes to web extensions, and refresh their
+                // toolbar buttons when an action's icon/badge changes.
+                WebExtensionManager.shared.syncTabs(for: self)
+                let extensionRevision = WebExtensionManager.shared.actionsRevision
+                if extensionRevision != lastExtensionRevision {
+                    lastExtensionRevision = extensionRevision
+                    splitVC.addressBar.reloadExtensionButtons()
+                }
+
                 // Theme change detection
                 let currentThemeID = ThemeStore.shared.currentThemeID
                 if currentThemeID != lastThemeID {
@@ -172,6 +188,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     nonisolated func windowWillClose(_ notification: Notification) {
         Task { @MainActor in
             TabSessionStore.save(tabManager: tabManager)
+            WebExtensionManager.shared.unregister(self)
         }
     }
 
