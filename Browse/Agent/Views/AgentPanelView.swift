@@ -39,10 +39,14 @@ struct AgentPanelView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            // The title never wraps or truncates; the provider capsule gives up space first.
             Label("Agent", systemImage: "sparkles")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
-            Spacer()
+                .lineLimit(1)
+                .fixedSize()
+                .layoutPriority(2)
+            Spacer(minLength: 0)
             providerMenu
             if activeProvider.supportsTools { modeMenu }
             iconButton("square.and.pencil", help: "New Conversation") {
@@ -56,6 +60,15 @@ struct AgentPanelView: View {
     }
 
     private var providerMenu: some View {
+        CappedToIdealWidth { providerMenuButton }
+            // Horizontally flexible so a long provider name truncates instead of squeezing the title.
+            .fixedSize(horizontal: false, vertical: true)
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .help("Model: \(activeProvider.model)")
+            .disabled(controller.isRunning)
+    }
+
+    private var providerMenuButton: some View {
         Menu {
             ForEach(providers.providers) { config in
                 Button {
@@ -75,6 +88,7 @@ struct AgentPanelView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .frame(maxWidth: 110)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -83,10 +97,6 @@ struct AgentPanelView: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
-        .glassEffect(.regular.interactive(), in: Capsule())
-        .help("Model: \(activeProvider.model)")
-        .disabled(controller.isRunning)
     }
 
     private var modeMenu: some View {
@@ -322,6 +332,24 @@ struct AgentPanelView: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
         .help(help)
+    }
+}
+
+// MARK: - Layout helpers
+
+/// Hugs its content at its ideal width but accepts less when space runs out. A bare
+/// `Menu` would otherwise stretch to fill whatever width the stack offers it.
+private struct CappedToIdealWidth: SwiftUI.Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(.unspecified)
+        let width = min(ideal.width, proposal.width ?? ideal.width)
+        let height = content.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
 
