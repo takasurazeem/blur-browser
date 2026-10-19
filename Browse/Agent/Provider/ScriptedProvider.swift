@@ -9,7 +9,12 @@ import Foundation
 struct ScriptedProvider: ModelProvider {
     var displayName: String { "Scripted (debug)" }
 
-    func respond(system: String, messages: [AgentMessage], tools: [ModelToolDefinition]) async throws -> ModelResponse {
+    func respond(
+        system: String,
+        messages: [AgentMessage],
+        tools: [ModelToolDefinition],
+        onEvent: @escaping @Sendable (ModelStreamEvent) async -> Void
+    ) async throws -> ModelResponse {
         // Steps taken so far = assistant turns since the last plain user text.
         let lastUserText = messages.lastIndex { message in
             message.role == .user && message.blocks.contains { if case .text = $0 { true } else { false } }

@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// Settings → AI: Claude API key (Keychain), model, and the consent log.
+/// Settings → AI: the model providers the Agent pane can use (keys in the
+/// Keychain), which one is active, and the consent log.
 struct AISettingsView: View {
-    @State private var keyDraft = ""
-    @State private var hasKey = AISettings.hasAPIKey
-    @State private var model = AISettings.claudeModel
-    @State private var status: String?
+    private var store: AIProviderStore { .shared }
+    @State private var editingID: UUID?
 
-    private static let models: [(id: String, name: String)] = [
+    private static let claudeModels: [(id: String, name: String)] = [
         ("claude-opus-5-5", "Claude Opus 5.5"),
         ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
         ("claude-haiku-5-5", "Claude Haiku 5.5"),
@@ -16,32 +15,24 @@ struct AISettingsView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        SecureField(hasKey ? "••••••••  (saved)" : "sk-ant-…", text: $keyDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 260)
-                        Button("Save", action: saveKey)
-                            .buttonStyle(.glassProminent)
-                            .tint(SettingsColors.accent)
-                            .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
-                        if hasKey {
-                            Button("Remove", role: .destructive, action: removeKey)
-                                .buttonStyle(.glass)
-                        }
-                    }
-                } label: {
-                    Text("Anthropic API key")
-                    Text(status ?? "Stored in your Keychain on this Mac only. Requests go straight to api.anthropic.com.")
+                ForEach(store.providers) { config in
+                    providerRow(config)
                 }
+            } header: {
+                HStack {
+                    Text("Model providers")
+                    Spacer()
+                    addMenu
+                }
+            } footer: {
+                Text("The selected provider powers the Agent pane (⌥⌘A). API keys are stored in your Keychain on this Mac only; requests go straight to the endpoint you set.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
 
-                Picker(selection: $model) {
-                    ForEach(Self.models, id: \.id) { Text($0.name).tag($0.id) }
-                } label: {
-                    Text("Model")
-                    Text("Used by the Agent panel (⌥⌘A).")
-                }
-                .onChange(of: model) { _, newValue in AISettings.claudeModel = newValue }
+            if let id = editingID, let config = store.providers.first(where: { $0.id == id }) {
+                ProviderEditor(config: config, claudeModels: Self.claudeModels)
+                    .id(id)
             }
 
             Section {
@@ -63,24 +54,217 @@ struct AISettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .onAppear { editingID = editingID ?? store.active.id }
+    }
+
+    private func providerRow(_ config: AIProviderConfig) -> some View {
+        let isActive = config.id == store.active.id
+        return HStack(spacing: 10) {
+            Button {
+                store.select(config.id)
+            } label: {
+                Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isActive ? SettingsColors.accent : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isActive ? "In use" : "Use this provider")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(config.label)
+                Text(subtitle(config))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if !store.isReady(config) {
+                Text("No key")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SettingsColors.danger)
+            }
+            Button(editingID == config.id ? "Done" : "Edit") {
+                editingID = editingID == config.id ? nil : config.id
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { editingID = config.id }
+    }
+
+    private func subtitle(_ config: AIProviderConfig) -> String {
+        "\(config.kind.label) · \(config.model)\(config.supportsTools ? "" : " · chat only")"
+    }
+
+    private var addMenu: some View {
+        Menu {
+            ForEach(AIProviderKind.allCases, id: \.self) { kind in
+                Button(kind.label) { editingID = store.add(kind: kind).id }
+            }
+            Divider()
+            Button("Local model (OpenAI-compatible)") {
+                editingID = store.add(
+                    kind: .openAICompatible, label: "Local model",
+                    baseURL: "http://127.0.0.1:8080/v1", model: "local", supportsTools: false).id
+            }
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.glass)
+        .controlSize(.small)
+        .fixedSize()
+    }
+}
+
+// MARK: - Editor
+
+/// Edits one provider. Text fields commit on submit or when focus leaves, so
+/// the stored config isn't rewritten on every keystroke.
+private struct ProviderEditor: View {
+    let config: AIProviderConfig
+    let claudeModels: [(id: String, name: String)]
+
+    private var store: AIProviderStore { .shared }
+    @State private var label = ""
+    @State private var baseURL = ""
+    @State private var model = ""
+    @State private var keyDraft = ""
+    @State private var status: String?
+
+    var body: some View {
+        Section {
+            TextField("Name", text: $label)
+                .onSubmit(commit)
+            Picker("Type", selection: kindBinding) {
+                ForEach(AIProviderKind.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            TextField("Base URL", text: $baseURL, prompt: Text(config.kind.defaultBaseURL))
+                .font(.system(size: 12, design: .monospaced))
+                .onSubmit(commit)
+            if config.kind == .anthropic {
+                Picker("Model", selection: modelBinding) {
+                    ForEach(claudeModels, id: \.id) { Text($0.name).tag($0.id) }
+                    if !claudeModels.contains(where: { $0.id == config.model }) {
+                        Text(config.model).tag(config.model)
+                    }
+                }
+            } else {
+                TextField("Model", text: $model, prompt: Text(config.kind.defaultModel))
+                    .font(.system(size: 12, design: .monospaced))
+                    .onSubmit(commit)
+            }
+            Toggle(isOn: toolsBinding) {
+                Text("Browser tools")
+                Text(config.supportsTools
+                     ? "The model can read pages, open tabs, click and type, with Ask / Dangerous permissions."
+                     : "Chat only: the current page's text is sent with each message. Turn on if the endpoint supports tool calls.")
+            }
+
+            LabeledContent {
+                HStack(spacing: 8) {
+                    SecureField(store.hasKey(config) ? "••••••••  (saved)" : (config.isLocal ? "Optional" : "Required"), text: $keyDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                        .onSubmit(saveKey)
+                    Button("Save", action: saveKey)
+                        .buttonStyle(.glassProminent)
+                        .tint(SettingsColors.accent)
+                        .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if store.hasKey(config) {
+                        Button("Remove", role: .destructive) {
+                            store.removeKey(for: config)
+                            status = "Removed."
+                        }
+                        .buttonStyle(.glass)
+                    }
+                }
+            } label: {
+                Text("API key")
+                Text(status ?? "Stored in your Keychain.")
+            }
+
+            if config.isLocal {
+                Text("Local servers need macOS Local Network access for Blur-Browser. If requests fail with “Local network prohibited”, run tools/relay.py and point this at http://127.0.0.1:<port>/v1 — see docs/ai-agent.md.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Delete Provider", role: .destructive) { store.remove(config.id) }
+                    .buttonStyle(.glass)
+                    .disabled(store.providers.count <= 1)
+            }
+        } header: {
+            Text("Edit \(config.label)")
+        }
+        .onAppear {
+            label = config.label
+            baseURL = config.baseURL
+            model = config.model
+        }
+        .onDisappear(perform: commit)
+    }
+
+    private var kindBinding: Binding<AIProviderKind> {
+        Binding(get: { config.kind }, set: { kind in
+            var updated = current
+            guard kind != updated.kind else { return }
+            // Switching type resets the endpoint and model to that type's defaults.
+            updated.kind = kind
+            updated.baseURL = kind.defaultBaseURL
+            updated.model = kind.defaultModel
+            baseURL = updated.baseURL
+            model = updated.model
+            store.update(updated)
+        })
+    }
+
+    private var modelBinding: Binding<String> {
+        Binding(get: { config.model }, set: { value in
+            var updated = current
+            updated.model = value
+            model = value
+            store.update(updated)
+        })
+    }
+
+    private var toolsBinding: Binding<Bool> {
+        Binding(get: { config.supportsTools }, set: { value in
+            var updated = current
+            updated.supportsTools = value
+            store.update(updated)
+        })
+    }
+
+    /// The config with uncommitted text-field edits applied.
+    private var current: AIProviderConfig {
+        var updated = store.providers.first { $0.id == config.id } ?? config
+        let trimmedLabel = label.trimmingCharacters(in: .whitespaces)
+        if !trimmedLabel.isEmpty { updated.label = trimmedLabel }
+        updated.baseURL = baseURL.trimmingCharacters(in: .whitespaces)
+        if updated.baseURL.isEmpty { updated.baseURL = updated.kind.defaultBaseURL }
+        let trimmedModel = model.trimmingCharacters(in: .whitespaces)
+        if !trimmedModel.isEmpty { updated.model = trimmedModel }
+        return updated
+    }
+
+    private func commit() {
+        guard store.providers.contains(where: { $0.id == config.id }) else { return }
+        let updated = current
+        if updated != config { store.update(updated) }
     }
 
     private func saveKey() {
         let key = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if KeychainStore.save(key, account: KeychainStore.anthropicAccount) {
+        guard !key.isEmpty else { return }
+        if store.setKey(key, for: config) {
             keyDraft = ""
-            hasKey = true
             status = "Saved to Keychain."
         } else {
             status = "Couldn't save to Keychain."
         }
-        NotificationCenter.default.post(name: .aiSettingsDidChange, object: nil)
-    }
-
-    private func removeKey() {
-        KeychainStore.delete(account: KeychainStore.anthropicAccount)
-        hasKey = false
-        status = "Removed."
-        NotificationCenter.default.post(name: .aiSettingsDidChange, object: nil)
     }
 }

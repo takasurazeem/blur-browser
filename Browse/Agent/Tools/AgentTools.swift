@@ -306,7 +306,7 @@ final class AgentToolbox {
         return value
     }
 
-    private func readPage() async throws -> String {
+    func readPage() async throws -> String {
         let tab = try requireSelectedTab()
         if tab.url == AppConstants.newTabURL {
             return "The selected tab is an empty new tab page. Use open_url to load a page."

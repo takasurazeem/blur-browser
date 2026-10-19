@@ -3,57 +3,74 @@ import Foundation
 /// Claude via the Messages API (`POST /v1/messages`) over plain URLSession —
 /// there's no official Swift SDK and the project takes no third-party deps.
 ///
-/// The API key is read from the Keychain on every request, so changing it in
-/// Settings → AI takes effect immediately and the key never sits in memory
-/// longer than one call.
+/// The key comes from the Keychain (see `AIProviderConfig.makeProvider`), read
+/// fresh for each agent run, so changing it in Settings → AI takes effect on
+/// the next message.
 struct ClaudeProvider: ModelProvider {
     static let defaultModel = "claude-opus-5-5"
-    static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
+    static let defaultBaseURL = "https://api.anthropic.com/v1"
+    static let vendor = "anthropic"
 
     /// Models that accept `fallbacks: "default"` (server-side refusal fallback).
     private static let fallbackModels: Set<String> = [
         "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
     ]
 
+    private static let effortModels = fallbackModels.union(["claude-haiku-5-5"])
+
     let model: String
     let effort: String
+    let baseURL: String
+    private let apiKey: String?
     var displayName: String { "Claude (\(model))" }
 
-    init(model: String = Self.defaultModel, effort: String = "medium") {
+    init(model: String = Self.defaultModel, effort: String = "medium", baseURL: String = Self.defaultBaseURL, apiKey: String?) {
         self.model = model
         self.effort = effort
+        self.baseURL = baseURL
+        self.apiKey = apiKey
     }
 
     func respond(
         system: String,
         messages: [AgentMessage],
-        tools: [ModelToolDefinition]
+        tools: [ModelToolDefinition],
+        onEvent: @escaping @Sendable (ModelStreamEvent) async -> Void
     ) async throws -> ModelResponse {
-        guard let apiKey = KeychainStore.read(account: KeychainStore.anthropicAccount),
-              !apiKey.isEmpty else {
+        guard let apiKey, !apiKey.isEmpty else {
             throw ModelProviderError.missingAPIKey
         }
+        let base = OpenAICompatibleProvider.normalizeBase(baseURL, fallback: Self.defaultBaseURL)
+        guard let endpoint = URL(string: base + "/messages") else {
+            throw ModelProviderError.badURL(baseURL)
+        }
+        let isFirstParty = endpoint.host() == "api.anthropic.com"
 
         var body: [String: JSONValue] = [
             "model": .string(model),
             "max_tokens": .number(16000),
             "system": .string(system),
             "messages": .array(messages.map(Self.encode)),
-            "tools": .array(tools.map { tool in
+        ]
+        if !tools.isEmpty {
+            body["tools"] = .array(tools.map { tool in
                 .object([
                     "name": .string(tool.name),
                     "description": .string(tool.description),
                     "input_schema": tool.inputSchema,
                 ])
-            }),
-            "output_config": .object(["effort": .string(effort)]),
-        ]
-        let useFallbacks = Self.fallbackModels.contains(model)
+            })
+        }
+        // Older models (e.g. ones imported from the Assistant pane) reject `effort`.
+        if Self.effortModels.contains(model) {
+            body["output_config"] = .object(["effort": .string(effort)])
+        }
+        let useFallbacks = isFirstParty && Self.fallbackModels.contains(model)
         if useFallbacks {
             body["fallbacks"] = .string("default")
         }
 
-        var request = URLRequest(url: Self.endpoint)
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -64,17 +81,11 @@ struct ClaudeProvider: ModelProvider {
         }
         request.httpBody = try JSONEncoder().encode(JSONValue.object(body))
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let json: JSONValue
         do {
-            json = try JSONDecoder().decode(JSONValue.self, from: data)
+            json = try await ProviderHTTP.postJSON(request)
         } catch {
-            throw ModelProviderError.http(status: status, message: String(decoding: data.prefix(300), as: UTF8.self))
-        }
-        guard (200..<300).contains(status) else {
-            let message = json["error"]?["message"]?.stringValue ?? "Unknown error"
-            throw ModelProviderError.http(status: status, message: message)
+            throw ProviderHTTP.describe(error, baseURL: baseURL)
         }
         return try Self.decode(json)
     }
@@ -82,7 +93,7 @@ struct ClaudeProvider: ModelProvider {
     // MARK: - Wire format
 
     private static func encode(_ message: AgentMessage) -> JSONValue {
-        let content: [JSONValue] = message.blocks.map { block in
+        let content: [JSONValue] = message.blocks.compactMap { block in
             switch block {
             case .text(let text):
                 return .object(["type": .string("text"), "text": .string(text)])
@@ -96,8 +107,8 @@ struct ClaudeProvider: ModelProvider {
                     "type": .string("tool_result"), "tool_use_id": .string(id),
                     "content": .string(content), "is_error": .bool(isError),
                 ])
-            case .opaque(let raw):
-                return raw
+            case .opaque(let vendor, let raw):
+                return vendor == Self.vendor ? raw : nil
             }
         }
         return .object(["role": .string(message.role.rawValue), "content": .array(content)])
@@ -120,7 +131,7 @@ struct ClaudeProvider: ModelProvider {
                     input: block["input"] ?? .object([:])
                 )
             default:
-                return .opaque(block)
+                return .opaque(vendor: Self.vendor, block)
             }
         }
         let stop: ModelResponse.StopReason

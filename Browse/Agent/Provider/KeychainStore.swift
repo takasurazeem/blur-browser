@@ -5,7 +5,6 @@ import Security
 /// device-only (not synchronizable) and readable only while unlocked.
 enum KeychainStore {
     static let service = "Blur-Browser.AI"
-    static let anthropicAccount = "anthropic-api-key"
 
     static func read(account: String) -> String? {
         let query: [String: Any] = [

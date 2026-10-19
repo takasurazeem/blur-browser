@@ -1,15 +1,18 @@
 import SwiftUI
 
-/// Right-side agent panel: chat, inline approval cards, permission mode.
-/// Hosted by `MainSplitViewController` the same way as the history panel.
+/// The single right-side AI pane: chat, inline approval cards, permission
+/// mode, and the model picker. Hosted by `MainSplitViewController` the same
+/// way as the history panel.
 struct AgentPanelView: View {
-    let controller: AgentController
+    @Bindable var controller: AgentController
     var onDismiss: () -> Void
 
     @State private var draft = ""
     @State private var showConsent = false
-    @State private var hasAPIKey = AISettings.hasAPIKey
     @FocusState private var composerFocused: Bool
+
+    private var providers: AIProviderStore { .shared }
+    private var activeProvider: AIProviderConfig { providers.active }
 
     private var session: AgentSession { controller.session }
     private var isDangerous: Bool { session.mode == .dangerous }
@@ -30,9 +33,6 @@ struct AgentPanelView: View {
                 onCancel: { showConsent = false }
             )
         }
-        .onReceive(NotificationCenter.default.publisher(for: .aiSettingsDidChange)) { _ in
-            hasAPIKey = AISettings.hasAPIKey
-        }
     }
 
     // MARK: - Header
@@ -43,7 +43,8 @@ struct AgentPanelView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
             Spacer()
-            modeMenu
+            providerMenu
+            if activeProvider.supportsTools { modeMenu }
             iconButton("square.and.pencil", help: "New Conversation") {
                 controller.resetConversation()
             }
@@ -52,6 +53,40 @@ struct AgentPanelView: View {
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 10)
+    }
+
+    private var providerMenu: some View {
+        Menu {
+            ForEach(providers.providers) { config in
+                Button {
+                    providers.select(config.id)
+                } label: {
+                    if config.id == activeProvider.id {
+                        Label(config.label, systemImage: "checkmark")
+                    } else {
+                        Text(config.label)
+                    }
+                }
+            }
+            Divider()
+            Button("AI Settings…") { SettingsWindowController.shared.showSettings(tab: .ai) }
+        } label: {
+            Text(activeProvider.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
+                .lineLimit(1)
+                .frame(maxWidth: 110)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .help("Model: \(activeProvider.model)")
+        .disabled(controller.isRunning)
     }
 
     private var modeMenu: some View {
@@ -113,7 +148,7 @@ struct AgentPanelView: View {
                     ForEach(controller.items) { item in
                         row(for: item).id(item.id)
                     }
-                    if controller.isRunning {
+                    if controller.isRunning && !isStreaming {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text("Working…")
@@ -127,23 +162,39 @@ struct AgentPanelView: View {
                 .padding(.vertical, 8)
             }
             .onChange(of: controller.items.count) {
-                withAnimation(.smooth(duration: 0.2)) {
-                    proxy.scrollTo(controller.isRunning ? AnyHashable("working") : AnyHashable(controller.items.last?.id), anchor: .bottom)
-                }
+                withAnimation(.smooth(duration: 0.2)) { scrollToEnd(proxy) }
             }
+            .onChange(of: streamingLength) { scrollToEnd(proxy) }
         }
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        let target = controller.isRunning && !isStreaming ? AnyHashable("working") : AnyHashable(controller.items.last?.id)
+        proxy.scrollTo(target, anchor: .bottom)
+    }
+
+    private var streamingLength: Int {
+        if case .streaming(let text, let reasoning)? = controller.items.last?.kind { return text.count + reasoning.count }
+        return 0
+    }
+
+    private var isStreaming: Bool {
+        if case .streaming? = controller.items.last?.kind { return true }
+        return false
     }
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Ask the agent to browse for you.")
+            Text(activeProvider.supportsTools ? "Ask the agent to browse for you." : "Ask about this page.")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
-            Text("It reads pages freely, and asks before it navigates, clicks, types or submits — unless you allow a site for this session or turn on Dangerous mode.")
+            Text(activeProvider.supportsTools
+                 ? "It reads pages freely, and asks before it navigates, clicks, types or submits — unless you allow a site for this session or turn on Dangerous mode."
+                 : "\(activeProvider.label) is set up for chat only, so it can't operate the browser. With page context on, it reads the current tab's text.")
                 .font(.system(size: 12))
                 .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
                 .fixedSize(horizontal: false, vertical: true)
-            if !hasAPIKey {
+            if !providers.isReady(activeProvider) {
                 Button("Add an API key in Settings → AI") { SettingsWindowController.shared.showSettings(tab: .ai) }
                     .buttonStyle(.glassProminent)
                     .tint(SettingsColors.accent)
@@ -174,6 +225,29 @@ struct AgentPanelView: View {
                 .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+        case .streaming(let text, let reasoning):
+            VStack(alignment: .leading, spacing: 6) {
+                if text.isEmpty {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(reasoning.isEmpty ? "Working…" : "Thinking…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                    }
+                    if !reasoning.isEmpty {
+                        Text(reasoning.suffix(600))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                            .lineLimit(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text(LocalizedStringKey(text))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         case .action(let info):
             AgentActionCard(info: info) { choice in
                 controller.resolveApproval(itemID: item.id, choice: choice)
@@ -189,8 +263,23 @@ struct AgentPanelView: View {
     // MARK: - Composer
 
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !activeProvider.supportsTools {
+                Toggle("Include this page", isOn: $controller.includePage)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .help("Send the current tab's text with your message")
+            }
+            composerField
+        }
+    }
+
+    private var composerField: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Ask the agent…", text: $draft, axis: .vertical)
+            TextField(activeProvider.supportsTools ? "Ask the agent…" : "Ask \(activeProvider.label)…", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .foregroundStyle(Color(nsColor: Colors.foregroundPrimary))
@@ -364,8 +453,4 @@ struct AgentConsentSheet: View {
         }
         .font(.system(size: 12))
     }
-}
-
-extension Notification.Name {
-    static let aiSettingsDidChange = Notification.Name("aiSettingsDidChange")
 }
