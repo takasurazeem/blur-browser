@@ -49,8 +49,6 @@ final class WebViewController: NSViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    private let cornerMaskView = CornerMaskView()
-
     /// Top-left overlay for the password Save/Update prompt. Mirrors the
     /// coordinator's `pendingSaveCredential` via a 50ms polling Task (same
     /// pattern as BrowserWindowController's tab-selection observer).
@@ -77,6 +75,12 @@ final class WebViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
+        // The page is a floating rounded card. A real layer mask (rather than
+        // painting chrome-colored corners on top) is required now that the
+        // chrome behind it is translucent glass.
+        view.layer?.cornerRadius = Layout.contentCornerRadius
+        view.layer?.cornerCurve = .continuous
+        view.layer?.masksToBounds = true
     }
 
     override func viewDidLayout() {
@@ -153,10 +157,6 @@ final class WebViewController: NSViewController {
         // doesn't depend on WKWebView loading anything.
         updateNewTabWallpaper(for: tab)
 
-        // Corner mask on top of web view to fake rounded corners
-        cornerMaskView.removeFromSuperview()
-        view.addSubview(cornerMaskView)
-
         // Save-password prompt overlay — top-left of the web content area.
         // Hit-tests through to the web view except inside the prompt itself.
         savePromptOverlay.frame = view.bounds
@@ -193,29 +193,15 @@ final class WebViewController: NSViewController {
     private func layoutCurrentWebView() {
         guard let wv = currentWebView else { return }
         wv.frame = view.bounds
-        cornerMaskView.frame = view.bounds
         // Keep error page (if any) sized to fill the content area
         errorPageHosting?.view.frame = view.bounds
         wallpaperView.frame = view.bounds
         privacyReportHostingView.frame = view.bounds
-        // Re-assert z-order: [wkwebview] < [wallpaper] < [privacyReport] < [cornerMask] < [quickSearchOverlay]
+        // Re-assert z-order: [wkwebview] < [wallpaper] < [privacyReport] < [quickSearchOverlay]
         // addSubview without a positioning arg moves the subview to the top.
         if wallpaperView.superview === view {
             wallpaperView.removeFromSuperview()
             view.addSubview(wallpaperView)
-        }
-        if privacyReportHostingView.superview === view {
-            privacyReportHostingView.removeFromSuperview()
-            view.addSubview(privacyReportHostingView)
-        }
-        cornerMaskView.removeFromSuperview()
-        view.addSubview(cornerMaskView)
-
-        // Keep the save-password overlay above the corner mask.
-        if savePromptOverlay.superview === view {
-            savePromptOverlay.frame = view.bounds
-            savePromptOverlay.removeFromSuperview()
-            view.addSubview(savePromptOverlay)
         }
     }
 
@@ -236,7 +222,7 @@ final class WebViewController: NSViewController {
             view.addSubview(wallpaperView)
         }
 
-        // Privacy report overlay sits above wallpaper, below cornerMask.
+        // Privacy report overlay sits above wallpaper.
         privacyReportHostingView.frame = view.bounds
         privacyReportHostingView.autoresizingMask = [.width, .height]
         if privacyReportHostingView.superview !== view {
@@ -587,7 +573,7 @@ final class WebViewController: NSViewController {
         hosting.view.autoresizingMask = [.width, .height]
         hosting.view.alphaValue = 0
 
-        view.addSubview(hosting.view, positioned: .below, relativeTo: cornerMaskView)
+        view.addSubview(hosting.view, positioned: .above, relativeTo: currentWebView)
         errorPageHosting = hosting
 
         // Animate in
@@ -816,52 +802,4 @@ final class WebViewController: NSViewController {
             height: h
         )
     }
-}
-
-// MARK: - Corner Mask View
-
-/// Draws the chrome background color into each corner on top of the WKWebView,
-/// faking rounded corners. WKWebView's internal compositing layers ignore
-/// parent masksToBounds, so this overlay paints over the sharp corners instead.
-private final class CornerMaskView: NSView {
-
-    private let maskLayer = CAShapeLayer()
-    private let radius: CGFloat = 16
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        // Fill the corners with chrome color, cut out the rounded rect center
-        maskLayer.fillRule = .evenOdd
-        maskLayer.fillColor = Colors.chromeBg.cgColor
-        layer?.addSublayer(maskLayer)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    // Use the layer-update path so updateLayer() is called on setNeedsDisplay.
-    // This lets reapplyTheme() re-read the chrome color after a theme switch
-    // (the CAShapeLayer's fillColor otherwise stays cached at the old value).
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        super.updateLayer()
-        maskLayer.fillColor = Colors.chromeBg.cgColor
-    }
-
-    override func layout() {
-        super.layout()
-        let rect = bounds
-        maskLayer.frame = rect
-
-        // Outer path = full rect, inner path = rounded rect (punched out)
-        let outer = CGMutablePath()
-        outer.addRect(rect)
-        outer.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
-        maskLayer.path = outer
-    }
-
-    // Pass all events through — this is purely visual
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
