@@ -15,6 +15,9 @@ final class MainSplitViewController: NSViewController {
 
     private var sidebarVC: SidebarViewController!
     private var historyHostingVC: NSHostingController<HistoryPanelView>!
+    private var assistantHostingVC: NSHostingController<AssistantPane>!
+    private var assistantStore: AssistantStore?
+    private var assistantWidth: CGFloat = 380
     private let leftDividerView = ResizeDividerView()
     private let rightDividerView = ResizeDividerView()
     private let borderOverlay = WindowBorderOverlayView()
@@ -23,6 +26,7 @@ final class MainSplitViewController: NSViewController {
     private var historyPanelWidth: CGFloat = 300
     private var isSidebarCollapsed = false
     private var isHistoryCollapsed = true
+    private var isAssistantCollapsed = true
     private(set) var isAddressBarHidden = false
     private var isAddressBarTemporarilyShown = false
     private var toolbarView: NSView!
@@ -158,6 +162,20 @@ final class MainSplitViewController: NSViewController {
         view.addSubview(historyHostingVC.view)
         historyHostingVC.view.isHidden = true
 
+        // -- Assistant panel (right, outermost) --
+        let assistant = AssistantStore(tabManager: tabManager)
+        assistantStore = assistant
+        let assistantView = AssistantPane(store: assistant) { [weak self] in
+            self?.toggleAssistant()
+        }
+        assistantHostingVC = NSHostingController(rootView: assistantView)
+        assistantHostingVC.sizingOptions = []
+        assistantHostingVC.view.wantsLayer = true
+        assistantHostingVC.view.layer?.backgroundColor = Colors.chromeBg.cgColor
+        addChild(assistantHostingVC)
+        view.addSubview(assistantHostingVC.view)
+        assistantHostingVC.view.isHidden = true
+
         // -- Dividers --
         view.addSubview(leftDividerView)
         let leftPan = NSPanGestureRecognizer(target: self, action: #selector(handleLeftDividerDrag(_:)))
@@ -237,12 +255,22 @@ final class MainSplitViewController: NSViewController {
 
         let contentX = isSidebarCollapsed ? chromeEdge : effectiveSidebarWidth
 
-        // ── Right history panel ──
+        // ── Right panels: assistant outermost, history to its left ──
         let effectiveHistoryWidth = isHistoryCollapsed ? 0 : historyPanelWidth
+        let effectiveAssistantWidth = isAssistantCollapsed ? 0 : assistantWidth
+        let assistantX = bounds.width - chromeEdge - effectiveAssistantWidth
+
+        assistantHostingVC.view.isHidden = isAssistantCollapsed
+        assistantHostingVC.view.frame = NSRect(
+            x: assistantX,
+            y: chromeEdge,
+            width: effectiveAssistantWidth,
+            height: bounds.height - chromeEdge
+        )
 
         historyHostingVC.view.isHidden = isHistoryCollapsed
         historyHostingVC.view.frame = NSRect(
-            x: bounds.width - effectiveHistoryWidth - chromeEdge,
+            x: assistantX - effectiveHistoryWidth,
             y: chromeEdge,
             width: effectiveHistoryWidth,
             height: bounds.height - chromeEdge
@@ -260,7 +288,9 @@ final class MainSplitViewController: NSViewController {
 //        }
 
         // ── Content container (toolbar + web view) ──
-        let contentRight = isHistoryCollapsed ? chromeEdge : effectiveHistoryWidth + chromeEdge + 1
+        let contentRight = chromeEdge
+            + (isHistoryCollapsed ? 0 : effectiveHistoryWidth + 1)
+            + (isAssistantCollapsed ? 0 : effectiveAssistantWidth + 1)
         let fullContentWidth = bounds.width - contentX - contentRight
 
         // The toolbar is effectively visible if it's not hidden OR temporarily shown on hover
@@ -435,6 +465,18 @@ final class MainSplitViewController: NSViewController {
             ctx.duration = 0.2
             ctx.allowsImplicitAnimation = true
             isAddressBarTemporarilyShown = false
+            layoutSubviews()
+        }
+    }
+
+    func toggleAssistant() {
+        isAssistantCollapsed.toggle()
+        if !isAssistantCollapsed {
+            isHistoryCollapsed = true
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.allowsImplicitAnimation = true
             layoutSubviews()
         }
     }

@@ -61,6 +61,7 @@ enum AppMenuBuilder {
         addItem(to: viewMenu, title: "Toggle Sidebar", action: #selector(AppDelegate.toggleSidebar(_:)), key: "\\", target: delegate)
         addItem(to: viewMenu, title: "Toggle Sidebar (Alt)", action: #selector(AppDelegate.toggleSidebar(_:)), key: "\\", modifiers: [.command, .shift], target: delegate)
         addItem(to: viewMenu, title: "Zen Mode", action: #selector(AppDelegate.focusMode(_:)), key: "F", modifiers: [.command, .shift], target: delegate)
+        addItem(to: viewMenu, title: "Toggle Assistant", action: #selector(AppDelegate.toggleAssistant(_:)), key: "y", modifiers: [.command, .shift], target: delegate)
         addItem(to: viewMenu, title: "Toggle Address Bar", action: #selector(AppDelegate.toggleAddressBar(_:)), key: "a", modifiers: [.command, .shift], target: delegate)
         viewMenu.addItem(.separator())
         addItem(to: viewMenu, title: "Reload", action: #selector(AppDelegate.reloadPage(_:)), key: "r", target: delegate)

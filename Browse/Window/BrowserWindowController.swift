@@ -258,6 +258,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         splitVC.toggleHistoryMode()
     }
 
+    func toggleAssistant() {
+        splitVC.toggleAssistant()
+    }
+
     func focusMode() {
         splitVC.focusMode()
     }
