@@ -240,6 +240,8 @@ time: both inject into every page.
 
 ### 1Password for Safari relocked right after unlock (fixed)
 
+Confirmed by the user on 2026-10-19: toolbar button → unlock → the item list stays open.
+
 Symptom: unlocking in the popup closed it, and it was locked again next time.
 The popup closed itself (`window.close()` from the page, not our popover),
 because 1Password's **Safari lock monitor** asks its native app
