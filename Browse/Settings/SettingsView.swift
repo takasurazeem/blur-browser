@@ -6,6 +6,7 @@ enum SettingsTab: String, CaseIterable {
     case privacy = "Privacy"
     case permissions = "Permissions"
     case shortcuts = "Shortcuts"
+    case ai = "AI"
     case about = "About"
 }
 
@@ -17,13 +18,22 @@ extension SettingsTab {
         case .privacy: "hand.raised"
         case .permissions: "lock.shield"
         case .shortcuts: "command"
+        case .ai: "sparkles"
         case .about: "info.circle"
         }
     }
 }
 
+/// Which Settings tab is showing — shared so other UI can deep-link a tab.
+@Observable
+@MainActor
+final class SettingsRouter {
+    static let shared = SettingsRouter()
+    var selectedTab: SettingsTab = .general
+}
+
 struct SettingsView: View {
-    @State private var selectedTab: SettingsTab = .general
+    @State private var router = SettingsRouter.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,7 +44,7 @@ struct SettingsView: View {
                 .frame(height: 28)
                 .frame(maxWidth: .infinity)
 
-            Picker("Section", selection: $selectedTab.animation(.smooth(duration: 0.2))) {
+            Picker("Section", selection: $router.selectedTab.animation(.smooth(duration: 0.2))) {
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
                     Label(tab.rawValue, systemImage: tab.symbol).tag(tab)
                 }
@@ -56,7 +66,7 @@ struct SettingsView: View {
 
     private var contentArea: some View {
         Group {
-            switch selectedTab {
+            switch router.selectedTab {
             case .general:
                 // Native grouped Form brings its own insets
                 GeneralSettingsView()
@@ -68,6 +78,9 @@ struct SettingsView: View {
                 SitePermissionsSettingsView().settingsPanePadding()
             case .shortcuts:
                 ShortcutsSettingsView().settingsPanePadding()
+            case .ai:
+                // Native grouped Form brings its own insets
+                AISettingsView()
             case .about:
                 AboutSettingsView().settingsPanePadding()
             }

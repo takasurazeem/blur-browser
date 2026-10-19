@@ -12,9 +12,12 @@ final class MainSplitViewController: NSViewController {
     let blocklistStore: BlocklistStore
     let webViewController: WebViewController
     let addressBar: AddressBarViewController
+    let agentController: AgentController
 
     private var sidebarVC: SidebarViewController!
     private var historyHostingVC: NSHostingController<HistoryPanelView>!
+    private var agentHostingVC: NSHostingController<AgentPanelView>!
+    private let agentDividerView = ResizeDividerView()
     private let leftDividerView = ResizeDividerView()
     private let rightDividerView = ResizeDividerView()
     private let borderOverlay = WindowBorderOverlayView()
@@ -23,6 +26,8 @@ final class MainSplitViewController: NSViewController {
     private var historyPanelWidth: CGFloat = 300
     private var isSidebarCollapsed = false
     private var isHistoryCollapsed = true
+    private var agentPanelWidth: CGFloat = 360
+    private(set) var isAgentCollapsed = true
     private(set) var isAddressBarHidden = false
     private var isAddressBarTemporarilyShown = false
     private var toolbarView: NSView!
@@ -61,8 +66,10 @@ final class MainSplitViewController: NSViewController {
         downloadStore: DownloadStore,
         downloadManager: DownloadManager,
         passwordStore: PasswordStore,
-        blocklistStore: BlocklistStore
+        blocklistStore: BlocklistStore,
+        agentController: AgentController
     ) {
+        self.agentController = agentController
         self.tabManager = tabManager
         self.historyStore = historyStore
         self.downloadStore = downloadStore
@@ -128,6 +135,9 @@ final class MainSplitViewController: NSViewController {
         addressBar.onToggleReaderMode = { [weak self] in
             self?.toggleReaderMode()
         }
+        addressBar.onToggleAgent = { [weak self] in
+            self?.toggleAgentPanel()
+        }
         webViewController.onReaderAvailabilityChanged = { [weak self] available in
             self?.addressBar.setReaderAvailable(available)
         }
@@ -183,6 +193,25 @@ final class MainSplitViewController: NSViewController {
         addChild(historyHostingVC)
         view.addSubview(historyHostingVC.view)
         historyHostingVC.view.isHidden = true
+
+        // -- Right agent panel (created once, starts hidden) --
+        // Shares the right edge with history; opening one closes the other.
+        agentHostingVC = NSHostingController(rootView: AgentPanelView(
+            controller: agentController,
+            onDismiss: { [weak self] in
+                self?.toggleAgentPanel()
+            }
+        ))
+        agentHostingVC.sizingOptions = []
+        agentHostingVC.view.wantsLayer = true
+        addChild(agentHostingVC)
+        view.addSubview(agentHostingVC.view)
+        agentHostingVC.view.isHidden = true
+
+        agentDividerView.isHidden = true
+        view.addSubview(agentDividerView)
+        let agentPan = NSPanGestureRecognizer(target: self, action: #selector(handleAgentDividerDrag(_:)))
+        agentDividerView.addGestureRecognizer(agentPan)
 
         // -- Dividers --
         view.addSubview(leftDividerView)
@@ -285,8 +314,28 @@ final class MainSplitViewController: NSViewController {
 //            view.addSubview(rightDividerView, positioned: .above, relativeTo: historyHostingVC.view)
 //        }
 
+        // ── Right agent panel ──
+        let effectiveAgentWidth = isAgentCollapsed ? 0 : agentPanelWidth
+        agentHostingVC.view.isHidden = isAgentCollapsed
+        agentHostingVC.view.frame = NSRect(
+            x: bounds.width - effectiveAgentWidth - chromeEdge,
+            y: chromeEdge,
+            width: effectiveAgentWidth,
+            height: bounds.height - chromeEdge - topInset
+        )
+        agentDividerView.isHidden = isAgentCollapsed
+        if !isAgentCollapsed {
+            agentDividerView.frame = NSRect(
+                x: bounds.width - effectiveAgentWidth - chromeEdge - (dividerHitWidth - 1) / 2 - 1,
+                y: chromeEdge, width: dividerHitWidth,
+                height: bounds.height - chromeEdge - topInset
+            )
+            view.addSubview(agentDividerView, positioned: .above, relativeTo: agentHostingVC.view)
+        }
+
         // ── Content container (toolbar + web view) ──
-        let contentRight = isHistoryCollapsed ? chromeEdge : effectiveHistoryWidth + chromeEdge + 1
+        let rightPanelWidth = !isHistoryCollapsed ? effectiveHistoryWidth : effectiveAgentWidth
+        let contentRight = rightPanelWidth == 0 ? chromeEdge : rightPanelWidth + chromeEdge + 1
         let fullContentWidth = bounds.width - contentX - contentRight
 
         // The toolbar is effectively visible if it's not hidden OR temporarily shown on hover
@@ -477,6 +526,17 @@ final class MainSplitViewController: NSViewController {
             ctx.duration = 0.2
             ctx.allowsImplicitAnimation = true
             isHistoryCollapsed.toggle()
+            if !isHistoryCollapsed { isAgentCollapsed = true }
+            layoutSubviews()
+        }
+    }
+
+    func toggleAgentPanel() {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.allowsImplicitAnimation = true
+            isAgentCollapsed.toggle()
+            if !isAgentCollapsed { isHistoryCollapsed = true }
             layoutSubviews()
         }
     }
@@ -900,6 +960,12 @@ final class MainSplitViewController: NSViewController {
         layoutSubviews()
     }
 
+    @objc private func handleAgentDividerDrag(_ gesture: NSPanGestureRecognizer) {
+        let location = gesture.location(in: view)
+        agentPanelWidth = max(280, min(560, view.bounds.width - location.x - Layout.chromeEdge))
+        layoutSubviews()
+    }
+
     // MARK: - Theme re-render
 
     /// Invalidate every mounted view's drawing so theme-aware colors re-resolve
@@ -921,6 +987,7 @@ final class MainSplitViewController: NSViewController {
         // token in its sublayer at init, so update them explicitly.
         leftDividerView.reapplyTheme()
         rightDividerView.reapplyTheme()
+        agentDividerView.reapplyTheme()
 
         // Sidebar toggle button tint (cached at configuration time)
         sidebarToggleButton.contentTintColor = Colors.foregroundMuted

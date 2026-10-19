@@ -11,6 +11,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     let passwordStore = PasswordStore()
     let blocklistStore = BlocklistStore()
     private(set) var downloadManager: DownloadManager!
+    /// Agent permission state for this window only. Not persisted, so
+    /// Dangerous mode and site grants reset on relaunch.
+    let agentSession = AgentSession()
 
     private var splitVC: MainSplitViewController!
     private var quickSearchOverlay: QuickSearchOverlay?
@@ -55,7 +58,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             downloadStore: downloadStore,
             downloadManager: downloadManager,
             passwordStore: passwordStore,
-            blocklistStore: blocklistStore
+            blocklistStore: blocklistStore,
+            agentController: AgentController(tabManager: tabManager, session: agentSession)
         )
         splitVC.webViewController.onNewTabRequested = { [weak self] url in
             self?.tabManager.addNewTab(url: url)
@@ -101,6 +105,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             var lastLoading: Bool = false
             var lastDownloadSignature: String = ""
             var lastThemeID: ThemeID? = ThemeStore.shared.currentThemeID
+            var lastAgentMode: AgentPermissionMode = .ask
             while !Task.isCancelled {
                 // Theme change detection
                 let currentThemeID = ThemeStore.shared.currentThemeID
@@ -121,6 +126,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
                         }
                     }
                     splitVC.webViewController.refreshNewTabOverlay()
+                }
+                // Agent Dangerous-mode indicator in the toolbar
+                if agentSession.mode != lastAgentMode {
+                    lastAgentMode = agentSession.mode
+                    splitVC.addressBar.setAgentDangerous(lastAgentMode == .dangerous)
                 }
                 let currentID = tabManager.selectedTabID
                 let currentURL = tabManager.selectedTab?.url
@@ -256,6 +266,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     func toggleHistory() {
         splitVC.toggleHistoryMode()
+    }
+
+    func toggleAgentPanel() {
+        splitVC.toggleAgentPanel()
     }
 
     func focusMode() {
