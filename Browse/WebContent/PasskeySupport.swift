@@ -13,10 +13,13 @@ import WebKit
 /// so the request fails instantly. Sites read that failure as a device
 /// problem; Google, for example, says "Make sure Bluetooth is on".
 ///
-/// Without the entitlement we turn WebAuthn off, so `PublicKeyCredential` is
-/// undefined and sites go straight to their fallbacks: password, a phone
-/// prompt, or "try another way". A build signed with the granted profile
-/// gets WebAuthn back on its own. See docs/passkeys.md.
+/// Without the entitlement we wrap `navigator.credentials` (`SecurityKeyBridge`)
+/// so `publicKey` requests talk CTAP2 to USB security keys directly, the way
+/// Chrome and Firefox do on macOS. WebKit's own WebAuthn is turned off unless
+/// an extension is installed that may wrap it first (1Password). Passkeys
+/// in iCloud Keychain and the phone/QR flow stay unavailable until then. A
+/// build signed with the granted profile gets WebKit's native WebAuthn back
+/// on its own. See docs/passkeys.md.
 @MainActor
 enum PasskeySupport {
     static let entitlement = "com.apple.developer.web-browser.public-key-credential"
@@ -33,20 +36,24 @@ enum PasskeySupport {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Blur-Browser", category: "Passkeys")
     private static var didLog = false
 
-    static func configure(_ preferences: WKPreferences) {
+    static func configure(_ configuration: WKWebViewConfiguration) {
         if !didLog {
             didLog = true
             if isAvailable {
                 logger.notice("Passkeys enabled: signed with \(entitlement, privacy: .public)")
             } else {
-                logger.notice("Passkeys: missing \(entitlement, privacy: .public); WebAuthn \(WebExtensionManager.hasSavedExtensions ? "left on for extensions" : "hidden so sites fall back", privacy: .public)")
+                logger.notice("Passkeys: missing \(entitlement, privacy: .public); built-in CTAP2 client for USB security keys, WebKit WebAuthn \(WebExtensionManager.hasSavedExtensions ? "left on for extensions" : "off", privacy: .public)")
             }
         }
+        guard !isAvailable else { return }
         // Password-manager extensions (1Password) supply passkeys by wrapping
-        // navigator.credentials, so leave WebAuthn visible when any extension
-        // is installed; their fallback just fails like before.
-        guard !isAvailable, !WebExtensionManager.hasSavedExtensions else { return }
-        setFeature("WebAuthenticationEnabled", enabled: false, in: preferences)
+        // navigator.credentials and only install if it exists, so leave
+        // WebKit's interfaces in place when any extension is installed. The
+        // shim wraps them either way and handles what the extension declines.
+        if !WebExtensionManager.hasSavedExtensions {
+            setFeature("WebAuthenticationEnabled", enabled: false, in: configuration.preferences)
+        }
+        SecurityKeyBridge.install(in: configuration)
     }
 
     /// WebKit's internal feature flags are only reachable through SPI
