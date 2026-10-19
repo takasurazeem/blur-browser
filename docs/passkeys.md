@@ -66,20 +66,19 @@ ad-hoc-signed browsers (see [extensions.md](extensions.md)).
 
 ## Getting the passkey entitlement
 
-For this fork: team **`95B9YTC3G2`**, bundle id **`com.takasurazeem.blur-browser`**.
+Below, `<TEAM_ID>` is your Apple Developer team ID and `<BUNDLE_ID>` the bundle id you set in `Config/Signing.local.xcconfig`.
 
 1. **Sign Xcode in to the team.** In Xcode › Settings › Accounts, add the
-   Apple ID that owns team `95B9YTC3G2`. As of 2026-10-19 Xcode on this Mac
-   only knows the free Personal Team (`E2D87XL9X7`), so it can't create
-   profiles for `95B9YTC3G2`.
+   Apple ID that owns team `<TEAM_ID>`. A free Personal Team can't create the
+   profiles this needs.
 2. **Register the App ID.** At developer.apple.com › Certificates, IDs &
    Profiles › Identifiers › **+** › App IDs › App, choose platform **macOS**
-   and an **Explicit** Bundle ID of `com.takasurazeem.blur-browser`.
+   and an **Explicit** Bundle ID of `<BUNDLE_ID>`.
 3. **Request the entitlement (Account Holder only).** Open
    <https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.web-browser.public-key-credential>
    and follow its link to the dedicated request form. The general "additional
    capabilities" form is the wrong one. Other roles get an access error.
-   - Team ID `95B9YTC3G2`, bundle id `com.takasurazeem.blur-browser`.
+   - Team ID `<TEAM_ID>`, bundle id `<BUNDLE_ID>`.
    - Describe it as a general-purpose macOS web browser built on WebKit
      (`WKWebView`). It handles `http`/`https`, can be the default browser, and
      users sign in to arbitrary sites, so it needs WebAuthn/passkeys for any
@@ -88,7 +87,7 @@ For this fork: team **`95B9YTC3G2`**, bundle id **`com.takasurazeem.blur-browser
 
 ### After the grant
 
-1. Identifiers › `com.takasurazeem.blur-browser` › **Capabilities** (or
+1. Identifiers › `<BUNDLE_ID>` › **Capabilities** (or
    **Additional Capabilities**): turn on the web browser public key credential
    capability and save. It only appears once the grant reaches the team.
 2. Register this Mac under Devices if it isn't already. The ID to enter:
@@ -98,8 +97,7 @@ For this fork: team **`95B9YTC3G2`**, bundle id **`com.takasurazeem.blur-browser
    ```
 
 3. Profiles › **+** › **macOS App Development** › App ID
-   `com.takasurazeem.blur-browser` › certificate "Apple Development: Takasur
-   Azeem (5SSRYGQ62H)" › this Mac. Name it `Blur Browser Passkeys Dev`, then
+   `<BUNDLE_ID>` › your "Apple Development" certificate › this Mac. Name it `Blur Browser Passkeys Dev`, then
    download and double-click it. For builds you give to other people, also
    make a **Developer ID** profile; that needs a Developer ID Application
    certificate.
@@ -126,7 +124,7 @@ For this fork: team **`95B9YTC3G2`**, bundle id **`com.takasurazeem.blur-browser
    ```
 
    It should list `com.apple.application-identifier`
-   (`95B9YTC3G2.com.takasurazeem.blur-browser`) and
+   (`<TEAM_ID>.<BUNDLE_ID>`) and
    `com.apple.developer.web-browser.public-key-credential`. On launch the app
    logs `Passkeys enabled`:
 

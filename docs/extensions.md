@@ -180,7 +180,7 @@ Notarization isn't part of the check.
 ### Your steps
 
 1. **Create a Developer ID Application certificate** (Account Holder of team
-   `95B9YTC3G2`): Xcode › Settings › Accounts › add that Apple ID if missing ›
+   `<TEAM_ID>`): Xcode › Settings › Accounts › add that Apple ID if missing ›
    select the team › **Manage Certificates…** › **+** › **Developer ID
    Application**. Or developer.apple.com › Certificates › + › Developer ID
    Application, with a CSR from Keychain Access. Check it with:
@@ -207,7 +207,7 @@ To watch what 1Password answers (message types and status codes only, never
 content):
 
 ```bash
-/usr/bin/log stream --level debug --predicate 'subsystem == "com.takasurazeem.blur-browser" AND category == "NativeMessaging"'
+/usr/bin/log stream --level debug --predicate 'subsystem == "<BUNDLE_ID>" AND category == "NativeMessaging"'
 ```
 
 - `BrowserVerificationFailed/UnknownBrowser`: not added in 1Password.
