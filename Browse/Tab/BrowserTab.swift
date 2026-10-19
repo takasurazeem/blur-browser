@@ -249,6 +249,8 @@ final class BrowserTab: Identifiable {
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "fullScreenEnabled")
         config.preferences.isElementFullscreenEnabled = true
+        // Hides WebAuthn unless the app carries the passkey entitlement.
+        PasskeySupport.configure(config.preferences)
         config.applicationNameForUserAgent = "Version/26.0 Safari/605.1.15"
 
         // Share the default (persistent) website data store across all tabs so

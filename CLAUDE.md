@@ -59,7 +59,8 @@ Browse/
 ├── WebContent/
 │   ├── WebViewController.swift        # NSViewController hosting WKWebView + find bar + quick search overlay
 │   ├── WebViewCoordinator.swift       # WKNavigationDelegate + WKUIDelegate, KVO observations
-│   └── WebViewConfiguration.swift     # WKWebViewConfiguration factory
+│   ├── WebViewConfiguration.swift     # WKWebViewConfiguration factory
+│   └── PasskeySupport.swift           # Hides WebAuthn unless signed with the passkey entitlement (docs/passkeys.md)
 ├── Search/
 │   ├── QuickSearchPanel.swift         # QuickSearchOverlay — NSHostingView overlay with blocking dim view
 │   ├── QuickSearchView.swift          # SwiftUI search UI with fixed 300pt height

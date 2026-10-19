@@ -51,6 +51,8 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Websites can ask to use a nearby phone or security key to sign in with a passkey.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Blur-Browser connects to AI model servers you set up on your local network.</string>
 </dict>

@@ -66,76 +66,121 @@ ad-hoc-signed browsers (see [extensions.md](extensions.md)).
 
 ## Getting the passkey entitlement
 
-1. **Account Holder only.** Only the team's Account Holder can submit
-   Apple's request form. Admins and Developers get an access error.
-2. Open the entitlement's documentation page and follow its link to the
-   dedicated request form:
+For this fork: team **`95B9YTC3G2`**, bundle id **`com.takasurazeem.blur-browser`**.
+
+1. **Sign Xcode in to the team.** In Xcode › Settings › Accounts, add the
+   Apple ID that owns team `95B9YTC3G2`. As of 2026-10-19 Xcode on this Mac
+   only knows the free Personal Team (`E2D87XL9X7`), so it can't create
+   profiles for `95B9YTC3G2`.
+2. **Register the App ID.** At developer.apple.com › Certificates, IDs &
+   Profiles › Identifiers › **+** › App IDs › App, choose platform **macOS**
+   and an **Explicit** Bundle ID of `com.takasurazeem.blur-browser`.
+3. **Request the entitlement (Account Holder only).** Open
    <https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.web-browser.public-key-credential>
-   (the general "additional capabilities" request form is the wrong one).
-3. Describe the app as a general-purpose macOS web browser: it handles
-   `http`/`https`, can be set as the default browser, and lets users browse
-   arbitrary sites. Give the bundle id you put in `Signing.local.xcconfig`.
-4. Wait for approval. Reports vary from days to weeks.
+   and follow its link to the dedicated request form. The general "additional
+   capabilities" form is the wrong one. Other roles get an access error.
+   - Team ID `95B9YTC3G2`, bundle id `com.takasurazeem.blur-browser`.
+   - Describe it as a general-purpose macOS web browser built on WebKit
+     (`WKWebView`). It handles `http`/`https`, can be the default browser, and
+     users sign in to arbitrary sites, so it needs WebAuthn/passkeys for any
+     relying party.
+4. **Wait for Apple's email.** Reports range from days to weeks.
 
 ### After the grant
 
-1. In **Certificates, Identifiers & Profiles → Identifiers**, open your App ID
-   (the bundle id above). Under **Additional Capabilities**, turn on the web
-   browser public key credential capability. It only appears once the grant
-   reaches your team.
-2. Create a **Developer ID** provisioning profile for that App ID, for
-   distribution outside the App Store. For local testing, also create a
-   **macOS App Development** profile that includes your Mac. Download and
-   double-click both.
-3. Point Release, and optionally Debug, at the managed entitlements and the
-   profile in `Config/Signing.local.xcconfig`:
+1. Identifiers › `com.takasurazeem.blur-browser` › **Capabilities** (or
+   **Additional Capabilities**): turn on the web browser public key credential
+   capability and save. It only appears once the grant reaches the team.
+2. Register this Mac under Devices if it isn't already. The ID to enter:
+
+   ```bash
+   system_profiler SPHardwareDataType | grep "Provisioning UDID"
+   ```
+
+3. Profiles › **+** › **macOS App Development** › App ID
+   `com.takasurazeem.blur-browser` › certificate "Apple Development: Takasur
+   Azeem (5SSRYGQ62H)" › this Mac. Name it `Blur Browser Passkeys Dev`, then
+   download and double-click it. For builds you give to other people, also
+   make a **Developer ID** profile; that needs a Developer ID Application
+   certificate.
+4. In `Config/Signing.local.xcconfig`, sign Debug with the profile and the
+   managed entitlements:
+
+   ```
+   BLUR_PROFILE_Debug = Blur Browser Passkeys Dev
+   BLUR_ENTITLEMENTS_Debug = Browse/Resources/Browse.entitlements
+   ```
+
+   Release, with a Developer ID profile:
 
    ```
    BLUR_SIGN_IDENTITY_Release = Developer ID Application
    BLUR_PROFILE_Release = <Developer ID profile name>
    BLUR_ENTITLEMENTS_Release = Browse/Resources/Browse.entitlements
-
-   // To test passkeys in Debug too:
-   // BLUR_SIGN_IDENTITY_Debug = Apple Development
-   // BLUR_PROFILE_Debug = <macOS App Development profile name>
-   // BLUR_ENTITLEMENTS_Debug = Browse/Resources/Browse.entitlements
    ```
 
-4. Confirm the signed app carries the key:
+5. Rebuild and check:
 
    ```bash
-   codesign -d --entitlements - path/to/Blur-Browser.app
+   codesign -d --entitlements - build/DerivedData/Build/Products/Debug/Blur-Browser.app
    ```
 
-5. Test at <https://webauthn.io>, then with a Google account that has a
-   passkey.
+   It should list `com.apple.application-identifier`
+   (`95B9YTC3G2.com.takasurazeem.blur-browser`) and
+   `com.apple.developer.web-browser.public-key-credential`. On launch the app
+   logs `Passkeys enabled`:
 
-## What works before the grant
+   ```bash
+   /usr/bin/log show --last 5m --predicate 'category == "Passkeys"'
+   ```
 
-Expect **none of WebAuthn to work** in an app without the entitlement. That
-covers iCloud Keychain passkeys, the phone/QR ("hybrid") flow, and USB/NFC
-security keys alike.
+6. Test at <https://webauthn.io>. Register should show the system passkey
+   sheet with iCloud Keychain, "iPhone, iPad or Android device" (QR), and
+   security key. Then try Google.
 
-On current macOS, WebKit hands every `navigator.credentials.create/get` call
-to AuthenticationServices. AuthenticationServices only presents its sheet for
-Safari or for apps holding this entitlement. Without it, sites get a
-`NotAllowedError`, and the system logs `ASAuthorizationError` 1004 ("Told not
-to present authorization sheet"). Developers on Apple's forums report that
-security keys failed the same way and started working once the entitlement was
-granted.
+Nothing in code needs to change after the grant. `PasskeySupport` turns
+WebAuthn back on when the running app has the entitlement.
 
-- **Bluetooth isn't the blocker.** The hybrid flow's Bluetooth work happens in
-  system daemons, not in the browser process, and the app isn't sandboxed, so
-  `com.apple.security.device.bluetooth` changes nothing. The missing
-  entitlement stops the sheet from appearing at all.
-- **Passwords still work.** Sites that offer a password or "try another way"
-  fall back fine. 1Password's extension may also be able to fill passkeys
-  itself once it's connected (see [extensions.md](extensions.md)).
-- **Possible stopgap, not built:** for a single sign-in, open it in
-  `ASWebAuthenticationSession`, which runs Safari's authentication stack with
-  passkey support. Cookies from that session land in Safari's store, not
-  `WKWebsiteDataStore.default()`, so the tab doesn't come out signed in. That
-  makes it a poor fit for general browsing.
+## Before the grant: what was measured
 
-To check this on your own build, open <https://webauthn.io> in a Debug build
-and register. A failure that shows `NotAllowedError` confirms the gate.
+Tested 2026-10-19 on macOS 27 with the user's Debug build and two signed
+probe apps. Evidence is from `log show`.
+
+| Build | Agent's answer | Result in the page |
+|---|---|---|
+| Team-signed, no provisioning profile (the normal Debug build) | "Attempted to perform authorization from process without application identifier." | `NotAllowedError` |
+| Same, with WebKit's own authenticator stack (`WebAuthenticationASEnabled` off) | Same refusal: that stack goes through the same agent ("Could not connect to authorization daemon") | `NotAllowedError` |
+| Signed with a Mac development profile, so it has `com.apple.application-identifier` | "Client tried to use web-browser-only options … not associated with domain webauthn.io … not properly entitled for this request. Rejecting." | `NotAllowedError` |
+
+So in a third-party `WKWebView` app, **every** WebAuthn path goes through
+AuthenticationServicesAgent and is refused without the managed entitlement:
+iCloud Keychain passkeys, the phone/QR (hybrid) flow, and USB/NFC security
+keys. The system sheet never appears.
+
+- **Google's "Make sure Bluetooth is on" is misleading.** Google shows it
+  whenever the WebAuthn call fails. Bluetooth is never reached. Safari has no
+  `NSBluetoothAlwaysUsageDescription` either, because the hybrid flow's
+  Bluetooth work happens in system daemons. The app isn't sandboxed, so
+  `com.apple.security.device.bluetooth` does nothing. Info.plist now has
+  `NSBluetoothAlwaysUsageDescription` anyway, for the post-grant flow in case
+  macOS asks, but it doesn't change the result before the grant.
+- **What the app does now:** `Browse/WebContent/PasskeySupport.swift` checks
+  the running app's signature. Without the entitlement it turns off WebKit's
+  `WebAuthenticationEnabled`, so pages see no `PublicKeyCredential` and skip
+  straight to their fallbacks (password, Google's phone prompt, "try another
+  way") instead of a broken passkey prompt. The app logs
+  `Passkeys disabled: missing …` once at launch.
+- **Associated domains don't help a browser.** With an application
+  identifier, the agent would accept a site only if the app listed it under
+  `webcredentials:` and the site's `apple-app-site-association` file named
+  the app. That's impossible for arbitrary sites like Google.
+- **Real alternatives, not built:**
+  - Implement CTAP2 over USB HID ourselves (what Chrome and Firefox do on
+    macOS) and bridge it into the page with an injected
+    `navigator.credentials` shim. That gets security keys working without
+    Apple. It's a large job: CTAP framing, CBOR, and the PIN protocol for
+    user verification.
+  - The phone/QR flow would also need caBLE v2 (BLE advertising, a tunnel
+    service, and the Noise handshake), which is much larger.
+  - `ASWebAuthenticationSession` runs Safari's stack, but its cookies land in
+    Safari's store, so the tab doesn't come out signed in.
