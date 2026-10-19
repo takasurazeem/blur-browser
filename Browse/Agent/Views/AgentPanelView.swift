@@ -9,10 +9,14 @@ struct AgentPanelView: View {
 
     @State private var draft = ""
     @State private var showConsent = false
+    @State private var showConversations = false
     @FocusState private var composerFocused: Bool
 
     private var providers: AIProviderStore { .shared }
     private var activeProvider: AIProviderConfig { providers.active }
+
+    private var vault: AgentConversationVault { .shared }
+    private var isLocked: Bool { vault.state == .locked || vault.state == .unlocking }
 
     private var session: AgentSession { controller.session }
     private var isDangerous: Bool { session.mode == .dangerous }
@@ -21,8 +25,12 @@ struct AgentPanelView: View {
         VStack(spacing: 0) {
             header
             if isDangerous { dangerBanner }
-            transcript
-            composer
+            if isLocked {
+                AgentLockedView(vault: vault)
+            } else {
+                transcript
+                composer
+            }
         }
         .sheet(isPresented: $showConsent) {
             AgentConsentSheet(
@@ -49,14 +57,29 @@ struct AgentPanelView: View {
             Spacer(minLength: 0)
             providerMenu
             if activeProvider.supportsTools { modeMenu }
+            if vault.state != .disabled { conversationsButton }
             iconButton("square.and.pencil", help: "New Conversation") {
                 controller.resetConversation()
             }
+            .disabled(isLocked)
             iconButton("xmark", help: "Close Agent", action: onDismiss)
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 10)
+    }
+
+    private var conversationsButton: some View {
+        iconButton(isLocked ? "lock.fill" : "clock.arrow.circlepath", help: isLocked ? "Saved chats are locked" : "Saved Chats") {
+            if isLocked {
+                Task { await vault.unlock() }
+            } else {
+                showConversations.toggle()
+            }
+        }
+        .popover(isPresented: $showConversations, arrowEdge: .bottom) {
+            AgentConversationsPopover(controller: controller, vault: vault) { showConversations = false }
+        }
     }
 
     private var providerMenu: some View {
@@ -283,6 +306,14 @@ struct AgentPanelView: View {
             .padding(.horizontal, 16)
             .padding(.top, 4)
             .help("Send the current tab's text with your message")
+            if let notice = modelChangeNotice {
+                Label(notice, systemImage: "arrow.triangle.swap")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: Colors.foregroundMuted))
+                    .lineLimit(2)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+            }
             composerField
         }
     }
@@ -313,6 +344,14 @@ struct AgentPanelView: View {
         .padding(.vertical, 6)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(10)
+    }
+
+    /// Shown when the chat last ran on a different model than the one
+    /// selected now, for example after reopening an older chat.
+    private var modelChangeNotice: String? {
+        guard !controller.items.isEmpty, let previous = controller.conversationModel,
+              previous != activeProvider.model else { return nil }
+        return "This chat used \(previous); it continues with \(activeProvider.model)."
     }
 
     private func submit() {

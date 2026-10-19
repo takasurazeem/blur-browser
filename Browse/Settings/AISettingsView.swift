@@ -7,6 +7,11 @@ struct AISettingsView: View {
     @State private var editingID: UUID?
     @State private var animateActions = AgentActionSettings.animate
     @State private var actionSpeed = AgentActionSettings.speed
+    @State private var saveChats = AgentChatSettings.saveConversations
+    @State private var requireTouchID = AgentChatSettings.requireAuthentication
+    @State private var autoLockMinutes = AgentChatSettings.autoLockMinutes
+    @State private var confirmDeleteChats = false
+    private var vault: AgentConversationVault { .shared }
 
     private static let claudeModels: [(id: String, name: String)] = [
         ("claude-opus-5-5", "Claude Opus 5.5"),
@@ -53,6 +58,8 @@ struct AISettingsView: View {
                 Text("Agent actions")
             }
 
+            savedChatsSection
+
             Section {
                 LabeledContent {
                     Button("Show in Finder") {
@@ -73,6 +80,67 @@ struct AISettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .onAppear { editingID = editingID ?? store.active.id }
+    }
+
+    private var savedChatsSection: some View {
+        Section {
+            Toggle(isOn: $saveChats) {
+                Text("Save agent conversations")
+                Text("Keep chats so you can pick them up later. Each one is encrypted on this Mac; page text attached with \"Include this page\" isn't kept.")
+            }
+            .onChange(of: saveChats) { _, value in vault.setSavingEnabled(value) }
+
+            Toggle(isOn: $requireTouchID) {
+                Text("Require Touch ID to view saved chats")
+                Text("Falls back to your Mac password. Turning this off asks for Touch ID first.")
+            }
+            .disabled(!saveChats)
+            .onChange(of: requireTouchID) { _, value in
+                guard value != AgentChatSettings.requireAuthentication else { return }
+                Task {
+                    let applied = await vault.setRequireAuthentication(value)
+                    if !applied { requireTouchID = AgentChatSettings.requireAuthentication }
+                }
+            }
+
+            Picker("Lock after", selection: $autoLockMinutes) {
+                ForEach(AgentChatSettings.autoLockChoices, id: \.minutes) { Text($0.label).tag($0.minutes) }
+            }
+            .disabled(!saveChats || !requireTouchID)
+            .onChange(of: autoLockMinutes) { _, value in AgentChatSettings.autoLockMinutes = value }
+
+            LabeledContent {
+                HStack(spacing: 8) {
+                    Button("Show in Finder") {
+                        let url = AgentConversationVault.directory
+                        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                        NSWorkspace.shared.open(url)
+                    }
+                    .buttonStyle(.glass)
+                    Button("Delete All…", role: .destructive) { confirmDeleteChats = true }
+                        .buttonStyle(.glass)
+                }
+            } label: {
+                Text("Saved chats")
+                Text(keyStatus)
+            }
+            .confirmationDialog("Delete all saved agent chats?", isPresented: $confirmDeleteChats) {
+                Button("Delete All", role: .destructive) { vault.deleteAll() }
+            } message: {
+                Text("This removes every encrypted chat file. Chats open in a window are saved again if you keep using them.")
+            }
+        } header: {
+            Text("Saved chats")
+        } footer: {
+            Text("Chats lock after the time above in the background or idle, and whenever the Mac sleeps or the screen locks. Providers still see whatever you send them.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var keyStatus: String {
+        if let mode = vault.keyMode { return mode.description }
+        return vault.state == .disabled ? "Saving is off." : "Unlock saved chats to see where the key is kept."
     }
 
     private func providerRow(_ config: AIProviderConfig) -> some View {

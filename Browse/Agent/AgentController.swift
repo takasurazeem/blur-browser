@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -47,7 +48,9 @@ final class AgentController {
     private let toolbox: AgentToolbox
     private let makeProvider: @MainActor () -> any ModelProvider
 
-    private(set) var items: [AgentChatItem] = []
+    private(set) var items: [AgentChatItem] = [] {
+        didSet { scheduleSave() }
+    }
     private(set) var isRunning = false
     /// Send the current tab's text with each message. Works with every
     /// provider; tool-capable ones can still call read_page for more.
@@ -55,12 +58,31 @@ final class AgentController {
         didSet { UserDefaults.standard.set(includePage, forKey: Self.includePageKey) }
     }
     private static let includePageKey = "agent.includePage"
-    private var transcript: [AgentMessage] = []
+    private var transcript: [AgentMessage] = [] {
+        didSet { scheduleSave() }
+    }
     private var runTask: Task<Void, Never>?
     private var pendingApprovals: [UUID: CheckedContinuation<AgentApprovalChoice, Never>] = [:]
 
     /// Hard stop so a confused model can't loop forever.
     private let maxSteps = 30
+
+    // MARK: Saved conversation
+
+    private var vault: AgentConversationVault { .shared }
+    /// The chat on screen. A new id is only saved once it has a message.
+    private(set) var conversationID = UUID()
+    private var conversationCreatedAt = Date()
+    private(set) var customTitle: String?
+    /// The model the chat last ran with; differs from the selected one after
+    /// switching providers or reopening an older chat.
+    private(set) var conversationModel: String?
+    private var conversationProviderID: UUID?
+    private var conversationProviderLabel: String?
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    /// Set when the vault locks, so unlocking reopens the same chat.
+    @ObservationIgnored private var conversationBeforeLock: UUID?
+    @ObservationIgnored private var hasRestored = false
 
     init(
         tabManager: TabManager,
@@ -70,6 +92,28 @@ final class AgentController {
         self.session = session
         self.toolbox = AgentToolbox(tabManager: tabManager)
         self.makeProvider = makeProvider
+
+        vault.addObserver(
+            self,
+            onUnlock: { [weak self] in self?.restoreAfterUnlock() },
+            onWillLock: { [weak self] in self?.hideForLock() })
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.saveNow() }
+        }
+        if vault.isUnlocked { restoreAfterUnlock() }
+
+        #if DEBUG
+        // Testing hook: `BLUR_AGENT_AUTOSEND="…"` sends one message shortly
+        // after launch (after saved chats auto-unlock, when that's on).
+        if let text = ProcessInfo.processInfo.environment["BLUR_AGENT_AUTOSEND"] {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.send(text)
+            }
+        }
+        #endif
     }
 
     // MARK: - Public API
@@ -77,6 +121,10 @@ final class AgentController {
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isRunning else { return }
+        let provider = AIProviderStore.shared.active
+        conversationModel = provider.model
+        conversationProviderID = provider.id
+        conversationProviderLabel = provider.label
         items.append(AgentChatItem(kind: .user(trimmed)))
         transcript.append(AgentMessage(role: .user, blocks: [.text(trimmed)]))
         isRunning = true
@@ -84,6 +132,7 @@ final class AgentController {
             await self?.runLoop()
             self?.isRunning = false
             self?.runTask = nil
+            self?.saveNow()
         }
     }
 
@@ -97,10 +146,48 @@ final class AgentController {
         pendingApprovals.removeAll()
     }
 
+    /// Starts a fresh chat. The current one stays saved.
     func resetConversation() {
         stop()
-        items.removeAll()
-        transcript.removeAll()
+        saveNow()
+        startBlankConversation()
+    }
+
+    /// Switches to a saved chat. It resumes in Ask mode.
+    func openConversation(_ id: UUID) {
+        guard id != conversationID else { return }
+        stop()
+        saveNow()
+        guard let saved = vault.load(id) else { return }
+        show(saved)
+        session.disableDangerousMode()
+    }
+
+    func renameConversation(_ id: UUID, to title: String) {
+        if id == conversationID {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            customTitle = trimmed.isEmpty ? nil : trimmed
+            saveNow()
+        } else {
+            vault.rename(id, to: title)
+        }
+    }
+
+    func deleteConversation(_ id: UUID) {
+        if id == conversationID {
+            stop()
+            startBlankConversation()
+        }
+        vault.delete(id)
+    }
+
+    /// Writes the chat now instead of after the debounce. Called on quit,
+    /// window close, switching chats and before locking.
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        guard vault.isUnlocked, let conversation = snapshot() else { return }
+        vault.save(conversation)
     }
 
     func resolveApproval(itemID: UUID, choice: AgentApprovalChoice) {
@@ -260,7 +347,86 @@ final class AgentController {
     private func attachPageContext() async {
         guard let page = try? await toolbox.readPage(), let last = transcript.indices.last,
               transcript[last].role == .user else { return }
-        transcript[last].blocks.insert(.text("Current page (for context):\n\(page)"), at: 0)
+        transcript[last].blocks.insert(.text("\(Self.pageContextPrefix)\(page)"), at: 0)
+    }
+
+    /// Marks the page text "Include this page" attaches; saved chats drop it.
+    nonisolated static let pageContextPrefix = "Current page (for context):\n"
+
+    // MARK: - Persistence
+
+    private func scheduleSave() {
+        guard vault.isUnlocked else { return }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.saveNow()
+        }
+    }
+
+    private func snapshot() -> AgentConversation? {
+        let storedItems = AgentConversation.storedItems(from: items)
+        guard storedItems.contains(where: { if case .user = $0 { true } else { false } }) else { return nil }
+        return AgentConversation(
+            id: conversationID,
+            customTitle: customTitle,
+            createdAt: conversationCreatedAt,
+            updatedAt: Date(),
+            providerID: conversationProviderID,
+            providerLabel: conversationProviderLabel,
+            model: conversationModel,
+            messages: AgentConversation.storedMessages(from: transcript),
+            items: storedItems)
+    }
+
+    private func show(_ saved: AgentConversation) {
+        conversationID = saved.id
+        conversationCreatedAt = saved.createdAt
+        customTitle = saved.customTitle
+        conversationModel = saved.model
+        conversationProviderID = saved.providerID
+        conversationProviderLabel = saved.providerLabel
+        transcript = saved.restoredTranscript()
+        items = saved.restoredItems()
+        saveTask?.cancel()
+    }
+
+    private func startBlankConversation() {
+        conversationID = UUID()
+        conversationCreatedAt = Date()
+        customTitle = nil
+        conversationModel = nil
+        conversationProviderID = nil
+        conversationProviderLabel = nil
+        items.removeAll()
+        transcript.removeAll()
+        saveTask?.cancel()
+    }
+
+    /// After unlocking, brings back the chat this window had before it
+    /// locked, or on launch the most recent one (first window only). A chat typed while locked
+    /// or with saving off stays on screen and gets saved.
+    private func restoreAfterUnlock() {
+        var target = conversationBeforeLock
+        if target == nil && !hasRestored && !vault.hasRestoredOnLaunch {
+            target = vault.summaries.first?.id
+            vault.hasRestoredOnLaunch = true
+        }
+        conversationBeforeLock = nil
+        hasRestored = true
+        if items.contains(where: { if case .user = $0.kind { true } else { false } }) { return saveNow() }
+        guard let target, let saved = vault.load(target) else { return }
+        show(saved)
+    }
+
+    /// Before the key is dropped: save, then take the chat off screen.
+    private func hideForLock() {
+        stop()
+        runTask?.cancel()
+        saveNow()
+        conversationBeforeLock = items.isEmpty ? nil : conversationID
+        startBlankConversation()
     }
 
     // MARK: - Helpers

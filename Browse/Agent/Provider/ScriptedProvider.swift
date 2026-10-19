@@ -5,7 +5,8 @@ import Foundation
 /// and permission prompts without an API key. Launch with
 /// `BLUR_AGENT_PROVIDER=scripted`. It handles one request shape:
 /// "open <domain> … heading" → open_url, read_page, then report the first
-/// line of page text.
+/// line of page text. Anything without "heading" gets a plain chat reply
+/// that says how many messages it can see, for testing saved chats.
 struct ScriptedProvider: ModelProvider {
     var displayName: String { "Scripted (debug)" }
 
@@ -29,6 +30,15 @@ struct ScriptedProvider: ModelProvider {
 
         if let (content, isError) = lastResult, isError {
             return ModelResponse(blocks: [.text("I couldn't do that: \(content)")], stopReason: .endTurn)
+        }
+
+        if step == 0 && !prompt.lowercased().contains("heading") {
+            let userTurns = messages.filter { message in
+                message.role == .user && message.blocks.contains { if case .text = $0 { true } else { false } }
+            }.count
+            return ModelResponse(blocks: [
+                .text("Scripted reply. I can see \(userTurns) message\(userTurns == 1 ? "" : "s") from you; the latest: \(prompt)"),
+            ], stopReason: .endTurn)
         }
 
         switch step {

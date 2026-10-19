@@ -19,6 +19,7 @@ its API keys moved into the Keychain (see "Migration from the Assistant pane").
 | Permission model + consent log | `Browse/Agent/Permissions/AgentPermissions.swift` |
 | Model providers | `Browse/Agent/Provider/` (`ModelProvider` protocol, `ClaudeProvider`, `OpenAICompatibleProvider`, `GeminiProvider`, `AIProviderStore`, `KeychainStore`) |
 | Local-network relay | `tools/relay.py` |
+| Saved chats (encryption, Touch ID lock) | `Browse/Agent/Conversations/` (`AgentConversation`, `AgentConversationVault`, `AgentConversationKey`), `Browse/Agent/Views/AgentConversationsView.swift` |
 | Settings → AI | `Browse/Settings/AISettingsView.swift` |
 
 ## Tools and risk levels
@@ -265,12 +266,95 @@ servers on any host. Web content is still loaded by WebKit.
 
 Debug builds launched with `BLUR_AGENT_PROVIDER=scripted` use `ScriptedProvider`. It
 handles one request, "open ‹domain› and tell me the heading", with no API key, so you
-can test the loop, tools and approval cards. It isn't compiled into Release builds.
+can test the loop, tools and approval cards. Any other message gets a plain reply saying
+how many of your messages it can see, which is handy for checking that a saved chat
+continued. It isn't compiled into Release builds.
+
+`BLUR_AGENT_AUTOSEND="…"` (Debug only) sends one message about three seconds after
+launch, after saved chats auto-unlock. To test persistence without Touch ID, pass
+`-ai.chats.requireTouchID NO` as a launch argument; it applies to that run only and is
+never written to disk.
+
+## Saved chats
+
+Agent chats are saved so you can pick one up later, encrypted on this Mac, and locked
+behind Touch ID.
+
+- **What's saved.** One file per chat: id, title (the first message, or your rename),
+  created and updated dates, the provider and model it last ran with, the transcript
+  sent to the model, and the rows the pane shows. Saves are debounced (1 s) and also
+  happen when a run ends, when you switch chats, on window close, on quit and before
+  locking.
+- **What isn't.** Page text attached by "Include this page" is replaced with a short
+  stub. Tool results such as `read_page` output are cut to 1,500 characters. Streaming
+  rows, pending approvals and running tool calls aren't kept: an unfinished action is
+  saved as interrupted, and a dangling tool call gets an "interrupted" result so the
+  chat can continue. Dangerous mode and site grants stay per window session; opening a
+  saved chat switches the window back to Ask.
+- **Where.** `~/Library/Application Support/Blur-Browser/AgentConversations/<uuid>.chat`
+  (folder 0700, files 0600). Each file is `BLURCHAT` followed by an AES-256-GCM sealed
+  box of the JSON, with `blur-agent-chat:<uuid>` as associated data so files can't be
+  swapped. There's no plaintext index: titles and dates live inside each encrypted file
+  and are decrypted into memory only while unlocked. The file names (random UUIDs),
+  sizes and modification times are visible.
+- **The key.** A random 256-bit key, made on first unlock and kept in the Keychain
+  (service `Blur-Browser.AgentConversations`, account `conversation-key`, this device
+  only, not synced). It's never written to disk or logged. Settings → AI → Saved chats
+  shows which mode below is in effect.
+- **Pane.** The clock button in the header lists saved chats (switch, rename, delete,
+  Lock). New Conversation starts a fresh chat and keeps the old ones. When locked, the
+  pane shows "Unlock with Touch ID". On launch, the first window reopens the most
+  recent chat once unlocked. If a chat last ran on a different model than the one
+  selected now, a small notice above the composer says so; it continues with the
+  selected provider.
+
+### Touch ID and the Keychain
+
+Unlocking runs `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`: Touch ID, with
+your Mac password as a fallback. Chats lock again after the "Lock after" time in the
+background or idle (default 15 minutes; idle is system-wide input), and always when the
+Mac sleeps, the display sleeps, the screen locks or you switch users. Locking saves,
+then drops the key and every decrypted chat from memory. Turning the Touch ID
+requirement off asks for Touch ID first.
+
+The app first tries to bind the key itself to user presence: a data-protection Keychain
+item with a `.userPresence` `SecAccessControl`, so macOS won't release it without
+Touch ID or the password. That Keychain needs an `application-identifier` entitlement
+from a provisioning profile. The current fork builds (Apple Development certificate,
+team 95B9YTC3G2, no profile) don't have one: `SecItemAdd` returns `errSecMissingEntitlement`
+(-34018), which was checked with a binary signed the same way. **So with today's signing,
+the fallback is in effect:** the key is a normal login-Keychain item that only this
+app's signature can read without a prompt, and the Touch ID gate is enforced by the app
+before it reads the key. If the build is later signed with a profile, the same code
+stores new keys biometry-bound automatically; nothing else changes.
+
+### Threat model
+
+Protects against:
+- Someone reading the files: another user account, a backup or Time Machine
+  snapshot, a copied home folder, cloud sync of Application Support, or a tool that
+  scans your disk. Without the Keychain key the files are ciphertext, and tampering
+  with them is detected (GCM authentication).
+- Someone at your unlocked Mac who opens the browser after it's been idle, asleep or
+  locked: they get the lock screen, not your chats, unless they pass Touch ID or know
+  your password.
+
+Doesn't protect against:
+- **Model providers.** Everything you send, including page text from "Include this
+  page" and `read_page`, goes to the provider you selected (or your local model and
+  relay) in the clear over its API. Saving chats doesn't change what they see or keep.
+- Malware running as you while your Mac is unlocked. It can read the login Keychain
+  item or the app's memory while chats are unlocked. In the fallback mode Touch ID is
+  an app-level gate, not a Keychain one.
+- Someone who knows your Mac password; it's the Touch ID fallback.
+- Metadata: how many chats exist, their sizes and when they changed.
+- Copies outside these files: anything you copied out, and what macOS or WebKit
+  caches about the pages themselves (history, cache). The agent pane doesn't log chat
+  text.
 
 ## Not in this slice
 
-- Streaming for Claude (it uses the non-streaming Messages API), conversation
-  persistence, and a history of past runs.
+- Streaming for Claude (it uses the non-streaming Messages API).
 - Element targeting inside iframes and closed shadow roots. `read_page` sees the top
   document and its open shadow roots only.
 - Real scroll-wheel events. `scroll` moves the cursor to the page centre and scrolls by

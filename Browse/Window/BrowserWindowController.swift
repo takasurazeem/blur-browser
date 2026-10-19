@@ -14,6 +14,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Agent permission state for this window only. Not persisted, so
     /// Dangerous mode and site grants reset on relaunch.
     let agentSession = AgentSession()
+    private(set) var agentController: AgentController!
 
     private var splitVC: MainSplitViewController!
     private var quickSearchOverlay: QuickSearchOverlay?
@@ -51,6 +52,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         Task { await PrivacyReportStore.shared.refresh() }
 
         downloadManager = DownloadManager(store: downloadStore)
+        agentController = AgentController(tabManager: tabManager, session: agentSession)
 
         splitVC = MainSplitViewController(
             tabManager: tabManager,
@@ -59,7 +61,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             downloadManager: downloadManager,
             passwordStore: passwordStore,
             blocklistStore: blocklistStore,
-            agentController: AgentController(tabManager: tabManager, session: agentSession)
+            agentController: agentController
         )
         splitVC.webViewController.onNewTabRequested = { [weak self] url in
             self?.tabManager.addNewTab(url: url)
@@ -202,6 +204,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     nonisolated func windowWillClose(_ notification: Notification) {
         Task { @MainActor in
             TabSessionStore.save(tabManager: tabManager)
+            agentController.saveNow()
             WebExtensionManager.shared.unregister(self)
         }
     }
