@@ -274,15 +274,15 @@ struct AgentPanelView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !activeProvider.supportsTools {
-                Toggle("Include this page", isOn: $controller.includePage)
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .help("Send the current tab's text with your message")
+            Toggle(isOn: $controller.includePage) {
+                Label("Include this page", systemImage: "globe")
             }
+            .toggleStyle(.checkbox)
+            .font(.system(size: 11))
+            .foregroundStyle(Color(nsColor: Colors.foregroundSecondary))
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .help("Send the current tab's text with your message")
             composerField
         }
     }

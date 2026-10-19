@@ -49,10 +49,12 @@ final class AgentController {
 
     private(set) var items: [AgentChatItem] = []
     private(set) var isRunning = false
-    /// For providers without tool calls: attach the current page's text to
-    /// each message, as the old Assistant pane did. Ignored when tools are on
-    /// (the model calls read_page itself).
-    var includePage = true
+    /// Send the current tab's text with each message. Works with every
+    /// provider; tool-capable ones can still call read_page for more.
+    var includePage = UserDefaults.standard.object(forKey: AgentController.includePageKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(includePage, forKey: Self.includePageKey) }
+    }
+    private static let includePageKey = "agent.includePage"
     private var transcript: [AgentMessage] = []
     private var runTask: Task<Void, Never>?
     private var pendingApprovals: [UUID: CheckedContinuation<AgentApprovalChoice, Never>] = [:]
@@ -113,7 +115,7 @@ final class AgentController {
         let useTools = provider.supportsTools
         let tools = useTools ? toolbox.tools.map(\.definition) : []
         let system = useTools ? Self.systemPrompt : Self.chatSystemPrompt
-        if !useTools && includePage { await attachPageContext() }
+        if includePage { await attachPageContext() }
 
         for _ in 0..<maxSteps {
             if Task.isCancelled { return notice("Stopped.") }
@@ -252,8 +254,9 @@ final class AgentController {
         items.removeAll { $0.id == itemID }
     }
 
-    /// Chat-only providers can't call read_page, so the page goes in with the
-    /// message, fenced off as untrusted content.
+    /// Attaches the current page to the user's message, fenced off as
+    /// untrusted content. Chat-only providers can't call read_page, and for
+    /// the rest it grounds the first answer without a tool round trip.
     private func attachPageContext() async {
         guard let page = try? await toolbox.readPage(), let last = transcript.indices.last,
               transcript[last].role == .user else { return }

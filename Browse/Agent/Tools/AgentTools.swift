@@ -422,7 +422,51 @@ final class AgentToolbox {
         elements.push({ id, tag: e.tagName.toLowerCase(), type, label: label.slice(0, 100), href: e.tagName === 'A' ? e.href : '' });
     }
     const max = 15000;
-    const text = (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n');
+    // body.innerText stops at shadow roots and frames, so sites built from web
+    // components (banks, Reddit) read as nearly empty. Walk the rendered tree
+    // instead: shadow roots (through their slots), same-origin iframes, and
+    // only visible nodes.
+    const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'HEAD']);
+    const parts = [];
+    let length = 0;
+    const push = (t) => { if (length < max * 2) { parts.push(t); length += t.length; } };
+    const walk = (node) => {
+        if (length >= max * 2) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const t = node.data.replace(/\\s+/g, ' ');
+            if (t.trim()) push(t);
+            return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
+        let display = 'contents';
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (skip.has(node.tagName.toUpperCase())) return;
+            display = getComputedStyle(node).display;
+            if (display === 'none') return;
+            // display: contents (slots, wrapper components) has no box, so
+            // checkVisibility() reports it hidden even though its children show.
+            if (display !== 'contents' && node.checkVisibility
+                && !node.checkVisibility({ visibilityProperty: true })) return;
+        }
+        const block = !display.startsWith('inline') && display !== 'contents';
+        const spaced = display.startsWith('inline-');
+        if (block) push('\\n');
+        if (spaced) push(' ');
+        if (node.tagName === 'IFRAME') {
+            try { if (node.contentDocument && node.contentDocument.body) walk(node.contentDocument.body); } catch (e) {}
+        } else if (node.tagName === 'SLOT') {
+            const assigned = node.assignedNodes({ flatten: true });
+            (assigned.length ? assigned : node.childNodes).forEach(walk);
+        } else if (node.shadowRoot) {
+            node.shadowRoot.childNodes.forEach(walk);
+        } else {
+            node.childNodes.forEach(walk);
+        }
+        if (spaced) push(' ');
+        if (block) push('\\n');
+    };
+    if (document.body) walk(document.body);
+    const text = parts.join('').replace(/ {2,}/g, ' ').replace(/[ \\t]*\\n[ \\t]*/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
     return JSON.stringify({ title: document.title, url: location.href, text: text.slice(0, max), truncated: text.length > max, elements });
     """
 
