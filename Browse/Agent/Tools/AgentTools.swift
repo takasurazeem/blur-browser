@@ -209,14 +209,14 @@ final class AgentToolbox {
 
     /// Labels from the most recent read_page, so approval cards can say what
     /// "element 12" actually is.
-    private var elementLabels: [Int: String] = [:]
+    var elementLabels: [Int: String] = [:]
 
     private func tab(withID id: String?) -> BrowserTab? {
         guard let id else { return nil }
         return tabManager.tabs.first { $0.id.uuidString.lowercased() == id.lowercased() }
     }
 
-    private func requireSelectedTab() throws -> BrowserTab {
+    func requireSelectedTab() throws -> BrowserTab {
         guard let tab = tabManager.selectedTab else { throw AgentToolError("No tab is selected.") }
         return tab
     }
@@ -285,7 +285,7 @@ final class AgentToolbox {
     }
 
     /// Waits for the tab to start and finish loading, up to 20 seconds.
-    private func waitForLoad(_ tab: BrowserTab) async {
+    func waitForLoad(_ tab: BrowserTab) async {
         try? await Task.sleep(for: .milliseconds(300))
         let deadline = Date().addingTimeInterval(20)
         while tab.webView.isLoading, Date() < deadline, !Task.isCancelled {
@@ -295,7 +295,7 @@ final class AgentToolbox {
 
     // MARK: - Page scripts
 
-    private func runScript(_ body: String, arguments: [String: Any] = [:], on tab: BrowserTab) async throws -> JSONValue {
+    func runScript(_ body: String, arguments: [String: Any] = [:], on tab: BrowserTab) async throws -> JSONValue {
         let result = try await tab.webView.callAsyncJavaScript(
             body, arguments: arguments, in: nil, contentWorld: .defaultClient)
         guard let string = result as? String, let data = string.data(using: .utf8) else {
@@ -341,47 +341,49 @@ final class AgentToolbox {
         """
     }
 
-    private func scroll(_ direction: String) async throws -> String {
-        let tab = try requireSelectedTab()
-        let value = try await runScript(Self.scrollJS, arguments: ["direction": direction], on: tab)
-        return "Scrolled \(direction). Now at \(value["y"]?.intValue ?? 0) of \(value["max"]?.intValue ?? 0)px."
-    }
-
     private func isSubmitControl(_ id: Int?) async -> Bool {
         guard let id, let tab = tabManager.selectedTab,
               let value = try? await runScript(Self.inspectJS, arguments: ["id": id], on: tab) else { return false }
         return value["submit"]?.boolValue == true
     }
 
-    private func click(_ id: Int?) async throws -> String {
-        guard let id else { throw AgentToolError("element_id is required.") }
-        let tab = try requireSelectedTab()
-        let before = tab.webView.url
-        let value = try await runScript(Self.clickJS, arguments: ["id": id], on: tab)
-        try? await Task.sleep(for: .milliseconds(400))
-        if tab.webView.isLoading || tab.webView.url != before { await waitForLoad(tab) }
-        let navigated = tab.webView.url != before ? " Page is now \(tab.webView.url?.absoluteString ?? "")." : ""
-        return "Clicked \(value["label"]?.stringValue ?? "element \(id)").\(navigated) Call read_page to see the result."
-    }
-
-    private func typeText(_ id: Int?, text: String, submit: Bool) async throws -> String {
-        guard let id else { throw AgentToolError("element_id is required.") }
-        let tab = try requireSelectedTab()
-        let before = tab.webView.url
-        _ = try await runScript(Self.typeJS, arguments: ["id": id, "text": text, "submit": submit], on: tab)
-        if submit {
-            try? await Task.sleep(for: .milliseconds(400))
-            await waitForLoad(tab)
-        }
-        let navigated = tab.webView.url != before ? " Page is now \(tab.webView.url?.absoluteString ?? "")." : ""
-        return "Typed into element \(id)\(submit ? " and submitted" : "").\(navigated)"
-    }
-
     // MARK: - JavaScript
 
     /// Shared helper: find an element tagged by the last read_page.
-    private static let findElementJS = """
-    const el = document.querySelector('[data-blur-agent-id="' + Number(id) + '"]');
+    /// Open shadow roots are walked too: sites like Reddit put their search
+    /// field inside web components.
+    static let shadowHelpersJS = """
+    // Document order, descending into each shadow root where its host sits.
+    const deepQueryAll = (root, sel, out = []) => {
+        for (const child of root.children) {
+            if (child.matches(sel)) out.push(child);
+            if (child.shadowRoot) deepQueryAll(child.shadowRoot, sel, out);
+            deepQueryAll(child, sel, out);
+        }
+        return out;
+    };
+    const composedContains = (ancestor, node) => {
+        for (let n = node; n; n = n.parentNode || n.host) if (n === ancestor) return true;
+        return false;
+    };
+    const deepElementFromPoint = (x, y) => {
+        let hit = document.elementFromPoint(x, y);
+        while (hit && hit.shadowRoot) {
+            const inner = hit.shadowRoot.elementFromPoint(x, y);
+            if (!inner || inner === hit) break;
+            hit = inner;
+        }
+        return hit;
+    };
+    const deepActiveElement = () => {
+        let a = document.activeElement;
+        while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+        return a;
+    };
+    """
+
+    static let findElementJS = shadowHelpersJS + """
+    const el = deepQueryAll(document, '[data-blur-agent-id="' + Number(id) + '"]')[0];
     if (!el) return JSON.stringify({ error: 'Element ' + id + ' not found. Call read_page again; ids change after navigation.' });
     const labelOf = (e) => (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || e.title || e.name || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
     const isSubmit = (e) => {
@@ -393,8 +395,8 @@ final class AgentToolbox {
     };
     """
 
-    private static let readPageJS = """
-    document.querySelectorAll('[data-blur-agent-id]').forEach(e => e.removeAttribute('data-blur-agent-id'));
+    private static let readPageJS = shadowHelpersJS + """
+    deepQueryAll(document, '[data-blur-agent-id]').forEach(e => e.removeAttribute('data-blur-agent-id'));
     const selector = 'a[href], button, input:not([type=hidden]), textarea, select, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [contenteditable=""], [contenteditable=true], summary';
     const visible = (e) => {
         const r = e.getBoundingClientRect();
@@ -404,7 +406,7 @@ final class AgentToolbox {
     };
     const elements = [];
     let next = 1;
-    for (const e of document.querySelectorAll(selector)) {
+    for (const e of deepQueryAll(document, selector)) {
         if (elements.length >= 200) break;
         if (!visible(e) || e.disabled) continue;
         const id = next++;
@@ -414,7 +416,7 @@ final class AgentToolbox {
         // Never expose what's typed in fields — only what the field is for.
         let label = (e.getAttribute('aria-label') || (isField ? '' : e.innerText) || e.placeholder || e.title || e.name || (type === 'submit' ? e.value : '') || '').trim().replace(/\\s+/g, ' ');
         if (!label && e.id) {
-            const l = document.querySelector('label[for="' + CSS.escape(e.id) + '"]');
+            const l = e.getRootNode().querySelector('label[for="' + CSS.escape(e.id) + '"]');
             if (l) label = l.innerText.trim();
         }
         elements.push({ id, tag: e.tagName.toLowerCase(), type, label: label.slice(0, 100), href: e.tagName === 'A' ? e.href : '' });
@@ -424,12 +426,13 @@ final class AgentToolbox {
     return JSON.stringify({ title: document.title, url: location.href, text: text.slice(0, max), truncated: text.length > max, elements });
     """
 
-    private static let scrollJS = """
+    static let scrollJS = """
     const h = window.innerHeight * 0.8;
-    if (direction === 'top') window.scrollTo(0, 0);
-    else if (direction === 'bottom') window.scrollTo(0, document.documentElement.scrollHeight);
-    else window.scrollBy(0, direction === 'up' ? -h : h);
-    await new Promise(r => setTimeout(r, 250));
+    const behavior = smooth ? 'smooth' : 'auto';
+    if (direction === 'top') window.scrollTo({ top: 0, behavior });
+    else if (direction === 'bottom') window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
+    else window.scrollBy({ top: direction === 'up' ? -h : h, behavior });
+    await new Promise(r => setTimeout(r, smooth ? 500 : 250));
     return JSON.stringify({ y: Math.round(window.scrollY), max: Math.round(document.documentElement.scrollHeight - window.innerHeight) });
     """
 
@@ -437,7 +440,7 @@ final class AgentToolbox {
     return JSON.stringify({ submit: isSubmit(el) });
     """
 
-    private static let clickJS = findElementJS + """
+    static let clickJS = findElementJS + """
     el.scrollIntoView({ block: 'center', inline: 'center' });
     if (typeof el.focus === 'function') el.focus();
     const label = labelOf(el);
@@ -445,7 +448,7 @@ final class AgentToolbox {
     return JSON.stringify({ label });
     """
 
-    private static let typeJS = findElementJS + """
+    static let typeJS = findElementJS + """
     const tag = el.tagName;
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'password') return JSON.stringify({ error: 'Typing into password fields is not allowed. Ask the user to enter it themselves.' });

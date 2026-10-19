@@ -5,6 +5,8 @@ import SwiftUI
 struct AISettingsView: View {
     private var store: AIProviderStore { .shared }
     @State private var editingID: UUID?
+    @State private var animateActions = AgentActionSettings.animate
+    @State private var actionSpeed = AgentActionSettings.speed
 
     private static let claudeModels: [(id: String, name: String)] = [
         ("claude-opus-5-5", "Claude Opus 5.5"),
@@ -33,6 +35,22 @@ struct AISettingsView: View {
             if let id = editingID, let config = store.providers.first(where: { $0.id == id }) {
                 ProviderEditor(config: config, claudeModels: Self.claudeModels)
                     .id(id)
+            }
+
+            Section {
+                Toggle(isOn: $animateActions) {
+                    Text("Animate agent actions")
+                    Text("Show a cursor that moves to what the agent clicks, and type one character at a time. Off: actions run as fast as possible, still as real clicks and keystrokes.")
+                }
+                .onChange(of: animateActions) { _, value in AgentActionSettings.animate = value }
+                Picker("Speed", selection: $actionSpeed) {
+                    ForEach(AgentActionSpeed.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!animateActions)
+                .onChange(of: actionSpeed) { _, value in AgentActionSettings.speed = value }
+            } header: {
+                Text("Agent actions")
             }
 
             Section {

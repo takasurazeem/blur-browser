@@ -14,7 +14,8 @@ its API keys moved into the Keychain (see "Migration from the Assistant pane").
 |---|---|
 | Panel (right side, shares the edge with History) | `Browse/Agent/Views/AgentPanelView.swift`, hosted in `MainSplitViewController` |
 | Agent loop | `Browse/Agent/AgentController.swift` |
-| Tools over `TabManager` / `WKWebView` | `Browse/Agent/Tools/AgentTools.swift` |
+| Tools over `TabManager` / `WKWebView` | `Browse/Agent/Tools/AgentTools.swift`, `AgentTools+Actions.swift` (click, type, scroll) |
+| Virtual cursor and real input | `Browse/Agent/Pointer/AgentActionOverlay.swift`, `AgentInputDriver.swift`; hosted by `WebViewController` |
 | Permission model + consent log | `Browse/Agent/Permissions/AgentPermissions.swift` |
 | Model providers | `Browse/Agent/Provider/` (`ModelProvider` protocol, `ClaudeProvider`, `OpenAICompatibleProvider`, `GeminiProvider`, `AIProviderStore`, `KeychainStore`) |
 | Local-network relay | `tools/relay.py` |
@@ -49,8 +50,62 @@ Other limits that apply in every mode:
   JavaScript can't change the agent's helpers.
 - The page text is labelled as untrusted in the tool result. The system prompt tells
   the model to treat it as data, not instructions.
+- `read_page` and element lookup also look inside open shadow roots, in document order,
+  because sites like Reddit put their search field inside web components.
 - The loop stops after 30 model steps. **Stop** cancels the run, and any approval it's
   waiting on counts as a denial.
+
+## How actions look: virtual cursor and real input
+
+The agent still picks **which** element to act on from `read_page`'s numbered list.
+What changed is how `click`, `type_text` and `scroll` are shown and delivered.
+
+1. **Aim.** A script in the isolated content world scrolls the element into view,
+   smoothly when animation is on. It returns the centre of the element's visible part
+   in CSS viewport coordinates, and whether a click there would land on it.
+   `elementFromPoint` is checked through shadow roots, and a `<label>` for the field
+   counts.
+2. **Show.** `AgentActionOverlay` sits above everything in the page card. It draws an
+   arrow cursor in the theme accent, which glides there over about 300–500 ms
+   (ease-in-out, longer for longer trips), then a ripple for a click. A small label
+   says "Agent is clicking…", "…typing…", "…submitting…" or "…scrolling…". Coordinates
+   are converted CSS px → web view points using `bounds.width / innerWidth`, which
+   covers page zoom.
+3. **Deliver.**
+   - Clicks are `mouseMoved`, `leftMouseDown` and `leftMouseUp` `NSEvent`s handed
+     straight to the `WKWebView`.
+   - Typing first clicks the field the same way. It then selects the field's contents
+     so typing replaces them, and sends one keyDown/keyUp per character. Delays are
+     45–120 ms × speed, with US key codes and Shift where needed.
+   - Submitting is a real Return.
+   - Pages get `isTrusted` events, just as from the user. Nothing goes through the
+     window's event queue, so the **real system cursor never moves**.
+4. **Block the user, briefly.** While an action runs, the overlay swallows mouse
+   clicks and scrolling over the page, without dimming it, so a stray click can't
+   race the agent. The overlay is transparent to hit-testing the rest of the time.
+
+### Fallbacks and safety checks
+
+- **Click.** If the point is covered or inside a cross-origin iframe, or a probe sees
+  no trusted click arrive, it falls back to the old scripted `el.click()`. The probe
+  checks `composedPath()` within 150 ms. A navigation counts as delivered.
+- **Typing.** Before **every** keystroke, it checks that focus is still on the target
+  and isn't a password field. If focus moved, it stops sending keys.
+  - If no trusted keydown reached the field, the whole value and the submit go
+    through the old script path.
+  - If keys arrived but the text differs (other keyboard layouts, input methods), the
+    value is corrected by script. Only a yes/no comes back, never the field's value.
+- **Password fields.** These are still refused before any input happens.
+- **Permissions.** Ask and Dangerous are unchanged. `AgentSession.decide` runs before
+  a tool's `run`, and the cursor only changes how an approved action is carried out.
+
+### Settings → AI → Agent actions
+
+- **Animate agent actions** (`ai.animateActions`, on by default). Off: no cursor and
+  no ripple, and typing goes at about 8 ms per key. Actions are still real
+  clicks and keystrokes, and still block the mouse while they run.
+- **Speed**: Slow (×1.7), Normal, or Fast (×0.45) for cursor travel and typing
+  (`ai.actionSpeed`).
 
 ## Permission modes
 
@@ -216,8 +271,11 @@ can test the loop, tools and approval cards. It isn't compiled into Release buil
 
 - Streaming for Claude (it uses the non-streaming Messages API), conversation
   persistence, and a history of past runs.
-- Element targeting inside iframes and shadow DOM. `read_page` only sees the top
-  document.
+- Element targeting inside iframes and closed shadow roots. `read_page` sees the top
+  document and its open shadow roots only.
+- Real scroll-wheel events. `scroll` moves the cursor to the page centre and scrolls by
+  script, smoothly when animation is on.
+- Hover menus. The cursor sends one `mouseMoved` at the target, not a continuous path.
 - Per-site grants that outlive the window session, and a settings list for revoking
   grants mid-session. Closing the window clears them.
 - Custom system prompt and temperature, which the Assistant pane had. Its stored
