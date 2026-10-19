@@ -612,6 +612,10 @@ final class WebViewController: NSViewController {
         tabManager.tabs.first(where: { $0.webView === webView })
     }
 
+    func replaceTab(_ tab: BrowserTab, loading url: URL) {
+        tabManager.replaceTab(tab, loading: url)
+    }
+
     func openURLInNewTab(_ url: URL) {
         onNewTabRequested?(url)
     }

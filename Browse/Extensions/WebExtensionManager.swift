@@ -1,6 +1,9 @@
 import AppKit
 import CryptoKit
+import OSLog
 import WebKit
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Blur-Browser", category: "Extensions")
 
 /// Owns the app-wide `WKWebExtensionController`, the installed extensions,
 /// and the delegate that maps WebKit's tabs/windows model onto `TabManager`.
@@ -82,7 +85,36 @@ final class WebExtensionManager: NSObject {
     /// Load every extension saved from a previous launch.
     func restore() {
         for source in Self.savedSources() {
-            Task { try? await load(source, isNewInstall: false) }
+            Task {
+                do { try await load(source, isNewInstall: false) }
+                catch { logger.error("Couldn't load extension at \(source.path, privacy: .public): \(error.localizedDescription, privacy: .public)") }
+            }
+        }
+        #if DEBUG
+        Task {
+            try? await Task.sleep(for: .seconds(10))
+            logState()
+        }
+        #endif
+    }
+
+    @ObservationIgnored private var loggedErrorCounts: [String: Int] = [:]
+
+    /// Debug aid: what WebKit thinks is open, next to what TabManager has.
+    func logState() {
+        let appTabs = windows.values.compactMap(\.windowController).flatMap { $0.tabManager.tabs }
+        logger.notice("App: \(self.windows.count) windows, \(appTabs.count) tabs")
+        for item in installed {
+            let context = item.context
+            let open = context.openTabs.compactMap { ($0 as? ExtensionTab) }
+            let matched = open.filter { adapter in appTabs.contains { $0.webView === adapter.tab?.webView } }
+            logger.notice("\(item.displayName, privacy: .public) \(context.baseURL.absoluteString, privacy: .public): loaded=\(context.isLoaded) windows=\(context.openWindows.count) tabs=\(open.count) matched=\(matched.count) errors=\(context.errors.count)")
+            let errors = context.errors
+            let start = loggedErrorCounts[item.id] ?? 0
+            for error in errors.dropFirst(min(start, errors.count)) {
+                logger.notice("  error: \(error.localizedDescription, privacy: .public)")
+            }
+            loggedErrorCounts[item.id] = errors.count
         }
     }
 
@@ -157,6 +189,11 @@ final class WebExtensionManager: NSObject {
 
         let context = WKWebExtensionContext(for: webExtension)
         context.uniqueIdentifier = source.id
+        // A stable base URL (WebKit picks a random one per launch otherwise),
+        // so restored tabs showing the extension's pages still resolve.
+        if let baseURL = URL(string: "webkit-extension://\(source.id.lowercased())/") {
+            context.baseURL = baseURL
+        }
         #if DEBUG
         context.isInspectable = true
         #endif
@@ -181,6 +218,7 @@ final class WebExtensionManager: NSObject {
 
         try controller.load(context)
         installed.append(Installed(source: source, context: context, isRemembered: remember))
+        reopenExtensionPages(of: context)
         if isNewInstall { Self.saveSources(installed.filter(\.isRemembered).map(\.source)) }
         actionsRevision += 1
     }
@@ -318,6 +356,32 @@ final class WebExtensionManager: NSObject {
         if let wc = NSApp.keyWindow?.windowController as? BrowserWindowController { return wc }
         if let wc = NSApp.mainWindow?.windowController as? BrowserWindowController { return wc }
         return windows.values.lazy.compactMap(\.windowController).first
+    }
+
+    // MARK: - Extension pages in tabs
+
+    func webViewConfiguration(for url: URL) -> WKWebViewConfiguration? {
+        guard url.scheme == "webkit-extension" else { return nil }
+        return controller.extensionContext(for: url)?.webViewConfiguration
+    }
+
+    /// Whether navigating `tab` to `url` crosses into or out of an extension's
+    /// pages, which needs a web view built from a different configuration.
+    func needsWebViewSwap(for tab: BrowserTab, to url: URL) -> Bool {
+        let target = webViewConfiguration(for: url) == nil ? nil : url.host
+        return target != tab.extensionPageHost
+    }
+
+    /// Tabs restored before the extension loaded got a plain web view; give
+    /// them the extension's configuration now.
+    private func reopenExtensionPages(of context: WKWebExtensionContext) {
+        guard let host = context.baseURL.host else { return }
+        for windowController in windows.values.compactMap(\.windowController) {
+            for tab in windowController.tabManager.tabs
+            where tab.url?.host == host && tab.extensionPageHost != host {
+                if let url = tab.url { windowController.tabManager.replaceTab(tab, loading: url) }
+            }
+        }
     }
 
     // MARK: - Actions

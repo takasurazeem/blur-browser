@@ -78,6 +78,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window?.contentViewController = splitVC
 
         WebExtensionManager.shared.register(self)
+        tabManager.onTabsChanged = { [weak self] in
+            guard let self else { return }
+            WebExtensionManager.shared.syncTabs(for: self)
+        }
         splitVC.addressBar.reloadExtensionButtons()
 
         // Prevent the address bar from auto-focusing on launch.

@@ -296,6 +296,18 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
             return
         }
 
+        // Moving into or out of a web extension's own pages needs a web view
+        // built from that extension's configuration; WebKit cancels the
+        // navigation otherwise. Replace the tab's web view instead.
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let url = navigationAction.request.url,
+           let tab = viewController?.tabForWebView(webView),
+           WebExtensionManager.shared.needsWebViewSwap(for: tab, to: url) {
+            decisionHandler(.cancel)
+            viewController?.replaceTab(tab, loading: url)
+            return
+        }
+
         // Update tab.url as soon as a main-frame navigation begins, so the
         // address bar reflects the target URL immediately and retry works
         // even when the navigation fails provisionally.

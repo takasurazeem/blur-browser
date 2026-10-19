@@ -58,12 +58,22 @@ final class BrowserTab: Identifiable {
     let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
 
+    /// Host of the web extension whose pages this tab's web view can show
+    /// (`webkit-extension://<host>/`), or nil for a normal web tab. Extension
+    /// pages only load in a web view built from that extension's
+    /// configuration, so tabs are swapped when crossing that boundary.
+    let extensionPageHost: String?
+
     init(url: URL? = nil, configuration: WKWebViewConfiguration? = nil) {
         self.id = UUID()
         self.url = url
         self.title = "New Tab"
 
-        let config = configuration ?? Self.makeFilterConfiguration()
+        let extensionConfig = configuration == nil
+            ? url.flatMap { WebExtensionManager.shared.webViewConfiguration(for: $0) }
+            : nil
+        self.extensionPageHost = extensionConfig == nil ? nil : url?.host
+        let config = configuration ?? extensionConfig ?? Self.makeFilterConfiguration()
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.allowsBackForwardNavigationGestures = true
         self.webView = wv

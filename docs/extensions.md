@@ -61,9 +61,22 @@ In Debug, extension pages are inspectable: Safari › Develop › Blur-Browser.
 - Extension calls that change tabs (`tabs.create`, `update`, `remove`,
   `pinned`) go back through `TabManager` methods.
 - The controller uses a persistent configuration (identifier kept in
-  `UserDefaults`), and each install keeps a stable `uniqueIdentifier`. Together
-  they make extension storage and `webkit-extension://` origins survive
-  relaunches.
+  `UserDefaults`). Each install keeps a stable `uniqueIdentifier` (its
+  storage) and a stable `baseURL`, `webkit-extension://<install id>/`. WebKit
+  picks a random base URL per launch otherwise, which breaks restored tabs
+  showing the extension's pages.
+- **Extension pages in tabs** (`webkit-extension://…`, e.g. 1Password's
+  welcome/sign-in page) only load in a web view built from that extension's
+  `WKWebExtensionContext.webViewConfiguration`. WebKit cancels the navigation
+  in any other web view, leaving a blank or broken page. `BrowserTab` picks
+  that configuration when it's created at an extension URL. When a tab
+  navigates into or out of extension pages, the navigation is cancelled and
+  `TabManager.replaceTab(_:loading:)` swaps in a new tab at the same position
+  (`WebExtensionManager.needsWebViewSwap`).
+- `TabManager.onTabsChanged` reports added, replaced and closed tabs to WebKit
+  immediately. The 50 ms poll was too slow: scripts in a new tab asked "which
+  tab am I?" before WebKit knew the tab ("Tab not found" from
+  `runtime.sendMessage`).
 
 ## Native messaging
 
@@ -201,6 +214,27 @@ content):
 - `BrowserVerificationFailed/BrowserSignatureInvalid`: added, but not signed
   with Developer ID.
 - Account and item traffic: connected.
+
+### With a free Apple developer account: 1Password without the desktop app
+
+No Developer ID means no desktop-app connection, but the extension can sign
+in to your 1Password account by itself:
+
+1. Click the 1Password toolbar button. Until it's set up, 1Password opens its
+   welcome tab instead of a popup; that's the extension's own choice
+   (`action.onClicked` → `tabs.create`). After setup the button shows its
+   popup.
+2. **Continue** → "Sign in to 1Password" (QR code, or email + Secret Key +
+   account password). Check the server picker at the bottom (1Password.com
+   vs ent.1password.com) matches your account.
+3. After signing in, fill and save work through the extension. You unlock it
+   with your account password; Touch ID unlock needs the desktop app
+   connection.
+
+Verified 2026-10-19 in /Applications/Blur-Browser.app: the welcome page
+renders, **Continue** reaches the sign-in form at
+`my.ent.1password.com/signin?a=new&auth-only=1`. Sign-in itself, filling and
+passkeys were not tested; they need your account.
 
 ### Passkeys through 1Password
 
