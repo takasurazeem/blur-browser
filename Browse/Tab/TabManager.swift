@@ -52,6 +52,17 @@ final class TabManager {
         return tab
     }
 
+    /// Insert an already-built tab after the current one and select it.
+    func adoptTab(_ tab: BrowserTab) {
+        if let idx = selectedIndex {
+            tabs.insert(tab, at: idx + 1)
+        } else {
+            tabs.append(tab)
+        }
+        selectedTabID = tab.id
+        onTabsChanged?()
+    }
+
     /// Swap `tab` for a fresh tab at the same position that loads `url`.
     /// Needed when a tab moves into or out of a web extension's own pages:
     /// WebKit only loads those in a web view built from that extension's

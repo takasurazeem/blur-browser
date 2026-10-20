@@ -620,6 +620,19 @@ final class WebViewController: NSViewController {
         onNewTabRequested?(url)
     }
 
+    /// A tab for `window.open` / `target=_blank`, built around WebKit's
+    /// configuration so the opener link survives. WebKit loads it.
+    func adoptNewWindowTab(configuration: WKWebViewConfiguration) -> BrowserTab {
+        let tab = BrowserTab(configuration: configuration)
+        tabManager.adoptTab(tab)
+        return tab
+    }
+
+    func closeTabForWebView(_ webView: WKWebView) {
+        guard let tab = tabForWebView(webView) else { return }
+        tabManager.closeTab(tab)
+    }
+
     // MARK: - Quick Search
 
     func toggleQuickSearch() {

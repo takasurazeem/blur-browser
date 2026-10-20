@@ -410,10 +410,28 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WK
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            webView.load(navigationAction.request)
+        guard navigationAction.targetFrame == nil else { return nil }
+        // The returned web view must use WebKit's `configuration`, or
+        // window.opener is lost — and with it OAuth popups like "Sign in with
+        // Google", which report back through the opener.
+        if windowFeatures.width != nil || windowFeatures.height != nil {
+            return PopupWindowController.present(
+                configuration: configuration,
+                windowFeatures: windowFeatures,
+                over: webView.window)
         }
-        return nil
+        guard let tab = viewController?.adoptNewWindowTab(configuration: configuration) else {
+            webView.load(navigationAction.request)
+            return nil
+        }
+        tab.webView.navigationDelegate = self
+        tab.webView.uiDelegate = self
+        return tab.webView
+    }
+
+    /// The page called `window.close()` on a tab it opened.
+    func webViewDidClose(_ webView: WKWebView) {
+        viewController?.closeTabForWebView(webView)
     }
 
     // MARK: - JavaScript Dialogs (alert / confirm / prompt)
